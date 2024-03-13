@@ -1,4 +1,4 @@
-Inspired on  chat64 cart by Bart Venneker and Theo van den Beld, same hardware with some midifications:
+Inspired on  chat64 cart by Bart Venneker and Theo van den Beld (https://github.com/bvenneker/Chat64), same hardware with some midifications:
 - SD card
 - 27C512 EEPROM
 - add jumpers to select 8k memory inside EEPROM

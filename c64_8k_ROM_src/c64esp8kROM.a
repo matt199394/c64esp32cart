@@ -1,4 +1,11 @@
-!to "c64espReloc.bin", plain	; set output file and format
+;compile with ACME
+;the code is a working progress, there are many bugs to fix, any help is appeciate.
+;Put the 8k binary iside a blank 64k binary file to flash on a 27c512 EEPROM
+;Have fun!
+;M. Angelini
+
+
+!to "c64esp8kROM.bin", plain	; set output file and format
 
 !macro pushreg {
 	php												 

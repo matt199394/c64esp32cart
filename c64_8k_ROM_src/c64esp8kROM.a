@@ -1,0 +1,977 @@
+!to "c64espReloc.bin", plain	; set output file and format
+
+!macro pushreg {
+	php												 
+	pha												 
+	txa												 
+	pha												 
+	tya												 
+	pha	
+}
+
+!macro popreg {   									 
+													
+	pla												 
+	tay												 
+	pla												 
+	tax												 
+	pla												 
+	plp
+}
+
+
+!addr	basout = $ffd2
+!addr	ptr1 = $fd            ;start FILE
+!addr	ptr2 = $fb            ;FILE SIZE
+!addr     RXFULL =  $02
+!addr     RYINDEX =  $03
+!addr     setPointer = $04
+
+!addr     chrin = $FFCF
+!addr     getin = $FFE4
+!addr     plot = $FFF0
+!addr     cia1 = $dc00  
+!addr     PRGEND = $080c    ; end of the Basic program
+
+colorData = $e000
+screenRam = $0400
+colorRam = $d800
+
+!zone start
+		* = $8000		; set program counter
+
+!word coldstart            ; coldstart vector
+!word warmstart            ; warmstart vector
+!byte $C3,$C2,$CD,$38,$30  ; "CBM8O". Autostart string
+
+ 
+
+coldstart
+     sei
+     stx $d016
+     jsr $fda3 ;Prepare IRQ
+     jsr $fd50 ;Init memory. Rewrite this routine to speed up boot process.
+     jsr $fd15 ;Init I/O
+     jsr $ff5b ;Init video
+     cli
+
+!zone warmstart
+warmstart
+        lda #<.shifted_start
+        sta ptr1
+        lda #>.shifted_start
+        sta ptr1+1 
+        lda #<.target
+        sta ptr2
+        lda #>.target
+        sta ptr2+1
+
+        ldy #0
+        ldx #$1e
+        beq .last
+.loop1  lda (ptr1),y        ; receive a page at a time
+        sta (ptr2),y
+        
+        iny
+        bne .loop1
+        inc ptr1 + 1
+        inc ptr2 + 1
+        dex
+        bne .loop1
+
+.last   ldx #0
+        beq .end
+        
+.loop2  lda (ptr1),y        ; receive the remaining bytes        
+        sta (ptr2),y
+        iny
+        dex
+        bne .loop2
+
+.end    
+        jmp .target
+
+
+.shifted_start
+		!pseudopc $c000 {
+
+.target
+
+!zone main_init
+main_init
+
+    SEI
+    CLD
+    LDX #$FF
+    TXS
+    JSR $FF84    ; IOINIT - Initialize I/O
+
+    ; Initialize SID registers (not done by Kernal reset routine):
+
+    LDX #$17
+    LDA #$00
+.lp1 STA $D400,X
+    DEX
+    BPL .lp1
+
+    JSR $FF87 ;- Initialize System Constants
+
+    ; $FF87 is not actually called because it would do
+    ; a RAM-test which lasts a few seconds.
+    ; The following code does the same as RAMTAS but
+    ; without the RAM-test:
+
+    LDA #$00
+    TAY
+.lp2 STA $0002,Y
+    STA $0200,Y
+    STA $0300,Y
+    INY
+    BNE .lp2
+
+    LDX #$00
+    LDY #$A0
+    JSR $FD8C
+
+    JSR $FF8A    ; RESTOR - Restore Kernal Vectors
+    JSR $FF81    ; CINT - Initialize screen editor
+    CLI
+
+    JSR $E453    ; Initialize Vectors
+    JSR $E3BF    ; Initialize BASIC RAM
+    ;JSR $E422    ; Output Power-Up Message
+    LDX #$FB
+    TXS
+
+    sei
+
+    lda #<(nmi)     			 ; \
+	sta $0318       			 ;  \ Load our new nmi vector
+	lda #>(nmi)     			 ;	/ And replace the old vector to our own nmi routine
+	sta $0319       			 ; /  
+
+	lda #100										 
+	sta DELAY
+restart
+    sei
+    lda #$31
+    sta $0314
+    lda #$ea
+    sta $0315
+    jsr $FF84  ;initialize I/O devices
+	cli
+
+	ldx #24							; zero SID sound register (1) 
+	lda #11									     		
+	sta $d021
+	lda #15						 
+	sta $d020	
+	lda #1	
+	sta 646                         ; current character color
+	lda #0				
+clear_sid_loop						; Clear the SID registers
+	sta $d400, x									
+	dex										     
+	bne clear_sid_loop							    	 
+	jsr $E544		 				; Clear screen
+	lda #23							; Load 23 into accumulator and use it to
+ 	sta $D018						; Switch to LOWER CASE	
+	jsr print_string				; Call the start screen sub routine first
+
+
+.loop  jsr getin
+    beq .loop
+    cmp #49       ;directory
+    beq .next
+    cmp #50       ;supermon+
+    beq .next
+    cmp #51       ;send message
+    beq .next
+    cmp #52       ;getWeather
+    beq .next
+    cmp #53       ;run
+    beq .run             
+    bne .loop
+
+.run 
+    jmp basic_run
+
+;stop jmp stop	
+
+.next
+	sta OPTION
+
+	cmp #49     ;directory
+	bne .next2
+	jmp directory
+
+.next2
+    cmp #50       ;supermon+
+    bne .next3
+    jsr receive_buffer									 
+    jsr delay	
+
+    ;JSR $E394  
+    ;JSR $A659
+    ;JMP $A7AE
+    ;jmp $A871
+    
+    sei 
+    dec $01
+    cli
+    jmp $a000
+     
+    
+.next3
+    cmp #51       ;send message
+    bne .next4
+    jsr sound
+    jsr delay
+    jsr send_buffer
+    jmp restart
+	
+.next4            ;getWeather
+    cmp #52
+    bne .next5
+    jsr receive_buffer
+    jsr delay	
+    jsr $E544	
+	jsr print_text
+	jsr sound
+	jsr setTOD
+	
+.loop2	
+    lda $dc01
+    cmp #%11101111   ;space
+	bne .loop2
+	jmp restart
+	
+.next5
+	jmp .loop
+
+
+;=========================================================================================================
+; directory
+;=========================================================================================================
+!zone directory
+directory
+    jsr receive_buffer										 
+	jsr delay	
+	jsr $E544	
+	jsr print_text
+	jsr sound 
+
+	lda #$04
+	sta $FC
+	lda #0
+	sta $FB
+	sta HOME_LINE
+	sta HOME_COLM
+	lda #5                    ;white
+	sta crs_color
+	jsr set_cursor
+
+.back	
+    jsr getin
+	jsr wait_cursor_invisible
+    cmp #17                    ;cursor DOWN
+	bne .next1
+	inc HOME_LINE
+	cmp #25
+	bcc .ok
+	lda #24
+	sta HOME_LINE
+.ok
+	jsr set_cursor
+	clc 
+	lda $fb
+	adc #40
+	sta $fb
+	lda $fc
+	adc #0
+	sta $fc
+	jmp .back
+
+.next1   
+    cmp #145                   ;cursor UP
+    bne .next2
+	dec HOME_LINE
+	bpl .ok1
+	lda #0
+	sta HOME_LINE
+.ok1	
+	jsr set_cursor
+	sec
+	lda $fb
+	sbc #40
+	sta $fb
+	lda $fc
+	sbc #0
+	sta $fc
+	jmp .back
+
+
+.next2
+    cmp #81              ;'q'             
+    bne .run 
+    lda #1
+    sta $cc	              ;disable cursor
+    jmp restart
+
+.run       
+    cmp #13
+	bne .back
+    jsr read_from_screen
+    lda #51
+    sta OPTION
+    jsr send_buffer
+    jsr delay
+    lda #53
+    sta OPTION
+    jsr receive_buffer										 
+    jsr delay
+    lda #1
+    sta $cc	              ;disable cursor
+    ;jsr wait_message_complete
+    jmp restart
+        
+        
+
+;=========================================================================================================
+; NMI ROUTINE, RECEIVE DATA FROM ESP32 AND WRITE INTO C64 RAM
+;=========================================================================================================
+!zone nmi			; When the ESP32 loads a byte in the 74ls244 it pulls the NMI line low
+nmi		
+     
+	bit $dd0d											 
+	+pushreg
+	lda setPointer
+	beq @next3
+	ldy RYINDEX									    	
+	lda $df00
+	sta ptr2,y
+	sta SIZE,y
+	iny
+	sty RYINDEX
+	cpy #4
+	bcc @next4
+	ldy #0
+	sty RYINDEX
+	sty setPointer
+
+@next4    
+    jmp exit_nmi
+
+
+
+@next3  
+    ldy RYINDEX	    
+    ldx ptr2+1
+    beq @last
+
+    lda $df00               ; receive a page at a time
+    sta (ptr1),y
+    inc $d020
+        
+    iny
+    bne @next2
+    dex 
+    stx ptr2+1
+    inc ptr1 + 1
+	 
+@next2  
+    sty RYINDEX
+
+    jmp exit_nmi
+        
+        
+        
+@last
+    ldx ptr2
+    bne @next1
+	lda #1									        
+	sta RXFULL  									
+	jmp  exit_nmi									
+        
+        
+@next1  
+    lda $df00             
+    sta (ptr1),y
+    inc $d020
+    iny
+    sty RYINDEX
+    dex
+    stx ptr2
+       
+																															 
+exit_nmi											 
+	 									 
+	+popreg									    	 
+	rti												 
+
+
+;=========================================================================================================
+; SUB ROUTINE, WAIT FOR READY TO RECIEVE SIGNAL FROM ESP32
+;=========================================================================================================
+!zone wait_for_ready_to_receive
+wait_for_ready_to_receive  			; wait for ready to receive before we send a byte
+												 
+	lda $df00						; read a value from IO2
+	cmp #128						; compare with 128
+	bcc wait_for_ready_to_receive	; if smaller try again
+	rts	
+ 
+;=========================================================================================================
+; SUB ROUTINE, send OPTION byte to receive data
+;=========================================================================================================  
+
+!zone receive_buffer
+receive_buffer							    	
+		
+	lda #0                            		 
+	sta RYINDEX								 
+	sta RXFULL 								 
+	lda #1
+	sta setPointer 
+	
+	jsr wait_for_ready_to_receive					
+	lda OPTION							    
+	sta $de00
+	rts
+     												
+wait_message_complete					    
+	lda RXFULL									 
+	beq wait_message_complete						 
+	rts
+
+;=========================================================================================================
+; SUB ROUTINE, DELAY
+;=========================================================================================================    
+!zone delay
+delay						; the delay sub routine is just a loop inside a loop
+							
+    ldx #00					; the inner loop counts up to 255
+							
+.loop						; the outer loop repeats that 255 times
+							
+    cpx DELAY				
+    beq .enddelay									 
+    inx												
+    ldy #00											
+ 													
+.delayloop												
+													
+    cpy #255										   
+    beq .loop										        
+    nop												
+    nop											
+    iny												
+    jmp .delayloop 									   
+													
+.enddelay											     
+												
+    rts	
+
+;=========================================================================================================
+; SUB ROUTINE, print_text
+;========================================================================================================= 
+!zone print_text
+             
+print_text
+
+        lda SIZE+2
+        sta ptr1
+        lda SIZE+3
+        sta ptr1+1              
+        ldy #0
+        ldx SIZE+1 
+        beq .last
+.loop1  lda (ptr1),y        ; receive a page at a time
+        jsr basout
+        
+        iny
+        bne .loop1
+        inc ptr1 + 1
+        dex
+        bne .loop1
+
+.last   ldx SIZE
+        beq .end
+        
+.loop2  lda (ptr1),y        ; receive the remaining bytes        
+        jsr basout
+        iny
+        dex
+        bne .loop2
+
+.end    rts
+
+
+;=========================================================================================================
+; SUB ROUTINE, SEND TXBUFFER TO ESP32
+;=========================================================================================================
+!zone send_buffer
+send_buffer										      
+	
+	lda OPTION									     		
+	sta $de00	
+
+ 	ldx #0					; x will be our index when we loop over the TXBUFFER
+@sendms   								
+										
+	jsr wait_for_ready_to_receive		; wait for ready to receive (bit D7 goes high)	    
+	lda TXBUFFER,x				; load a byte from the TXBUFFER with index x
+	sta $de00 	                 	; send it to IO1	
+	cmp #128    				; if the last byte was 128, the buffer is finished                   
+	beq @exit				; exit in that case     
+	inx					; increase the x index
+	jmp @sendms  				; jump back to send the next byte
+										
+@exit									
+	rts		
+ 
+
+;=========================================================================================================
+; SUB ROUTINE, sound
+;=========================================================================================================
+sound
+	lda #0
+	sta $d400
+	sta $d407
+	lda #143 					; set volume to max
+	sta $d418					; and store it here
+	lda PITCH					; load the needed sound pitch (higher value = higher pitch)
+	sta $d401					; and store it here (voice 1)
+	sta $d408					; also here (voice 2)	
+		
+	lda #15						;
+	sta $d405					; set attack / decay lenght (voice 1)
+	sta $d40c					; set attack / decay lenght (voice 2)
+	lda #249					;
+	sta $d406					; set volume sustain / release lenght (voice 1)
+	sta $d40d					; set volume sustain / release lenght (voice 2)
+								
+	lda #17
+	sta $d404					; set triangle wave form (bit 4) and gate bit 0 to 1 (sound on) 
+	lda #16						;
+	sta $d404					; set gate bit 0 to 0 (sound off)
+	rts
+
+
+;=========================================================================================================
+; SUB ROUTINE, print string
+;========================================================================================================= 
+!zone print_string
+
+print_string
+        ldx #0
+	    beq +			; enter loop
+
+-	    jsr basout	    ; output character
+	    inx		        ; advance pointer
++	    lda .string, x	; get character
+	    bne -		    ; check whether last
+	    rts
+
+.string	       !pet "     *** C64 ESP32 Cart ***", 13,13
+               !pet "1.SD directory", 13
+               !pet "2.Supermon+", 13
+               !pet "3.Send message", 13
+               !pet "4.Get time & weather", 13
+               !pet "5.Run prg", 13, 0
+
+
+;=========================================================================================================
+;    Function for text input
+;========================================================================================================= 
+!zone clear_lines
+
+clear_lines
+
+        ldx HOME_LINE			; Clear the text input box
+.clear_l				; Start of clear loop
+	jsr $E9FF  	   		; Clear line in register x
+	cpx LIMIT_LINE			; Are there more lines to clear?
+	beq set_cursor			; If not, jmp to !all_clean and exit the loop
+	inx							; Increase x register
+	jmp .clear_l			; Jump back to the start of the loop and clear the next line
+
+;=========================================================================================================
+;    SUB ROUTINE, set_cursor (raw, column, color)
+;========================================================================================================= 
+									    
+set_cursor
+
+    clc              		; Clear carry so we can SET the cursor position
+	ldx HOME_LINE    		; Select row
+	ldy HOME_COLM    		; Select column
+	jsr $E50C        		; Set cursor	
+	;lda #0 
+	;sta $00cc   		; Show cursor 
+	lda crs_color           	; Load 5 in accumulator (petscii code for color white)
+	jsr $ffd2        		; Output that petscii code to screen to change the cursor to white
+	rts
+
+;=========================================================================================================
+; SUB ROUTINE, READ TEXT FIELD FROM SCREEN
+;=========================================================================================================   
+!zone read_from_screen
+read_from_screen						    
+										
+	ldy #0					; y will be used as index for the text
+								
+.read_character					
+						; we have a pointer in zero page address $fb that points to the screen position 
+	lda ($fb),y				; Read a character from screen, start at address ($fb), y is the offset
+	sta TXBUFFER,y				; Put the character in the buffer at index y
+	iny					; Increment y
+	cmp #32					; If the character is a space, the text field is finished
+	bne .read_character			; If not jump back to read another character
+						; Close the buffer
+	dey					; Decrement y
+	lda #128				; Load 128 in accumulator	
+	sta TXBUFFER,y				; Store 128 in the buffer to finish the buffer
+	rts  					; Return to sender, just like elvis.
+
+
+;=========================================================================================================
+; SUB ROUTINE, Shift the message screen up. (so not the whole screen, just the messages)
+;========================================================================================================= 
+!zone Shift_Screen_up
+Shift_Screen_up							    
+								; this routine should behave a little bit different if we are in the private chat screen
+	;lda SCREEN_ID				; load the screen id				
+	;cmp #3						; 3 is the private chat screen
+	;bne !m+					; if not goto to m label		
+	;ldx #120					; if this is the private chat we start shifting up but ignore the first 3 lines (120 characters)
+	;jmp !l+					; jump into the loop.			
+
+!zone							;	
+m								; if we are on the main chat screen, we start shifting at zero.
+    ldx #0					    ; x is our index for reading and writing the screen
+.l lda $428,x					; load the character
+    sta $400,x					; write the character somewhere else
+    lda $D828,x					; load the color
+    sta $D800,x					; write the color somewhere else
+    inx   						;
+    cpx #240					; 6 lines
+    bne .l
+ !zone   
+    ldx #$00
+.l lda $518,x    
+    sta $4F0,x
+    lda $D918,x
+    sta $D8F0,x
+    inx   
+    cpx #240					; 6 lines
+    bne .l   
+ !zone   
+    ldx #$00
+.l lda $608,x    
+    sta $5E0,x
+    lda $DA08,x
+    sta $D9E0,x
+    inx   
+    cpx #240				    ; 6 lines
+    bne .l
+ !zone   
+    ldx #$00
+.l lda $6F8,x    
+    sta $6D0,x
+    lda #32						; load the space character
+    sta $6F8,x					; and write it to clear the original character (this is only needed on the last lines)
+    lda $DAF8,x
+    sta $DAD0,x
+    inx   
+    cpx #80						; 2 lines
+    bne .l
+    rts	
+
+;=========================================================================================================
+; SUB ROUTINES, to draw horizontal lines on screen (used in the menus)
+;========================================================================================================= 
+!zone draw_top_menu_lines 
+draw_top_menu_lines				; this first routine uses the second routine to draw 
+	lda #0						; a line on line 0 and line 2
+	sta $fb								
+	jsr draw_menu_line					
+	lda #2								
+	sta $fb								
+	jsr draw_menu_line					
+	rts									
+;=========================================================================================================
+draw_menu_line						
+	ldx $fb						; de desired position of the line is stored in $fb
+	lda screen_lines_low,x		; look up the corresponding address in screen RAM (low byte first)
+	sta $fb						; store that in $fb to create a pointer to screen RAM
+	sta $fd						; store the same low byte to create a pointer to the corresponding address in color RAM
+	lda screen_lines_high,x		; load the high byte of the address of screen RAM
+	sta $fc						; store that in $fc, now we have a pointer $fb,$fc to the screen RAM
+	lda color_lines_high,x		; load the high byte of the address of color RAM
+	sta $fe						; store that in $fe, now we have a pointer $fd,$fe to the color RAM
+	ldy #0						; y is the itterator for the loop
+.loop							; start the loop
+	lda #64						; load the screen code for a horizontal bar
+	sta ($fb),y					; put it on screen
+	lda #5						; load the color green
+	sta ($fd),y					; put it on screen
+	iny							; increase y
+	cpy #40						; if y reaches 40, exit the loop
+	bne .loop					; else, continue the loop
+        rts						; return from subroutine
+
+;=========================================================================================================
+; SUB ROUTINE, WAIT FOR CURSOR INVISIBLE PHASE
+;=========================================================================================================    
+!zone wait_cursor_invisible
+wait_cursor_invisible			; wait for the cursor to disapear before moving it
+	tay							; transfer the accumulator to y
+.waitloop						; start a loop
+    lda #$00  		            ; show the cursor (the program can hang without this line in this loop..)
+    sta $cc
+	lda $cf 					; when the value in this address goes zero, the cursor is in it's invisible phase        		
+	bne .waitloop			    ; wait for zero
+	tya							; transfer y back to the accumulator
+	rts										
+
+;=========================================================================================================
+; Running a Basic program from Assembler
+;=========================================================================================================
+!zone basic_run
+basic_run
+
+    ;lda #<PRGEND
+    ;sta $2d
+    ;sta $ae
+    ;lda #>PRGEND
+    ;sta $2e
+    ;sta $af
+    
+    jsr $a659    ; reset execute pointer and do clr
+    jsr $a533    ; rechain lines
+    jsr $E37B 	 ;BASIC warm start entry point
+    ;jsr $E394    ;BASIC cold start entry point
+    jmp $a7ae    ; basic warm start
+    ;jmp $a871    ;perform RUN
+
+;=========================================================================================================
+; setTOD
+;=========================================================================================================
+!zone setTOD
+setTOD
+        lda screenRam + 6
+        sta time
+        lda screenRam + 7
+        sta time + 1
+        lda screenRam + 9
+        sta time + 2
+        lda screenRam + 10
+        sta time + 3
+        lda screenRam + 12
+        sta time + 4
+        lda screenRam + 13
+        sta time + 5
+
+numconv ldx #5
+.loop	lda time,x
+		sec
+		sbc #48
+		sta time,x
+		dex
+		bpl .loop
+		
+		
+bcdconv	
+		ldx #5
+		ldy #0
+.loop2	lda time-1,x
+		asl
+		asl
+		asl
+		asl
+		ora time,x
+		sta second,y
+		iny
+		dex
+		dex
+		bpl .loop2
+		
+		lda second+2
+		cmp #$13
+		bcc .nochange
+		sei
+		sed
+		sec
+		sbc #$12
+		ora #$80
+		sta second+2
+		
+.nochange 
+        cld
+		cli
+		
+		lda second+2
+		ldx second+1
+		ldy second
+		
+		sty cia1+9
+		stx cia1+10
+		sta cia1+11
+		lda #0
+		sta cia1+8
+		
+		lda cia1+15  ;cia1 control register B 
+		and #$7f
+		sta cia1+15  ;Select Time of Day
+		
+		lda $dc0e    ;cia1 control register A
+		ora #$80
+		sta $dc0e    ;Time of Day Clock frequency 1=50 Hz 0=60 Hz
+		
+		sei
+		lda #<update
+		sta $314
+		lda #>update
+		sta $315
+		cli
+
+		lda #15
+		sta toggle
+		rts
+
+;=========================================================================================================
+; update time
+;=========================================================================================================
+!zone update
+     		
+update	
+        lda toggle
+		dec toggle
+		beq .start
+		jmp $ea31
+		
+.start	lda #15
+		sta toggle
+		
+		ldx #2
+.copy	lda cia1+9,x
+		sta second,x
+		dex
+		bpl .copy
+		lda cia1+8
+		cmp #5
+		bcs .noblink
+		lda #58
+		sta screenRam + 8
+		sta screenRam + 11
+		bcc .next
+.noblink lda #32
+		sta screenRam + 8
+		sta screenRam + 11
+		
+.next	sei
+		sed
+		lda second+2
+     	bmi .pm
+		cmp #$12
+		bne .next1
+		lda #0
+		sta second+2
+.next1	cld
+		cli
+		jmp .print
+.pm		and #$1f
+		cmp #$12
+		beq .day
+		clc
+		adc #$12
+		sta second+2
+		cld
+		cli
+		bcc .print
+	
+.day    cld
+        cli
+		sta second+2
+		
+		
+.print    
+        lsr
+		lsr
+		lsr
+		lsr
+		clc
+		adc #48
+		sta screenRam + 6
+		
+		lda second+2
+		and #$0f
+		clc
+		adc #48
+		sta screenRam + 7
+		
+		lda second+1
+		and #$f0
+		lsr
+		lsr
+		lsr
+		lsr
+		clc
+		adc #48
+		sta screenRam + 9
+		lda second+1
+		and #$0f
+		clc
+		adc #48
+		sta screenRam + 10
+		
+		lda second
+		and #$f0
+		lsr
+		lsr
+		lsr
+		lsr
+		clc
+		adc #48
+		sta screenRam + 12
+		lda second
+		and #$0f
+		clc
+		adc #48
+		sta screenRam + 13
+		
+ 	    jmp $ea31
+
+;=========================================================================================================
+; CONSTANTS
+;=========================================================================================================
+screen_lines_low  		!byte $00,$28,$50,$78,$A0,$C8,$F0,$18,$40,$68,$90,$b8,$e0,$08,$30,$58,$80,$a8,$d0,$f8,$20,$48,$70,$98,$c0
+screen_lines_high 		!byte $04,$04,$04,$04,$04,$04,$04,$05,$05,$05,$05,$05,$05,$06,$06,$06,$06,$06,$06,$06,$07,$07,$07,07,$07
+color_lines_high 		!byte $d8,$d8,$d8,$d8,$d8,$d8,$d8,$d9,$d9,$d9,$d9,$d9,$d9,$da,$da,$da,$da,$da,$da,$da,$db,$db,$db,$db,$db
+;=========================================================================================================
+;    global variable
+;========================================================================================================= 
+DELAY           !byte 0
+crs_color	!byte 0
+PITCH	        !byte 125	
+OPTION	        !byte 0	
+SIZE            !byte 0,0,0,0
+HOME_LINE	!byte 0			  ; the start line of the text input box
+HOME_COLM	!byte 0			  ; the start column of the text input box
+LIMIT_LINE	!byte 0			  ; the end line of the text input box 
+LIMIT_COLM	!byte 0			  ; the end column of the text input box
+time	 !byte 	0,0,0,0,0,0	
+second   !byte 0,0,0
+toggle   !byte 0
+
+;!align  255, 0
+
+;TXBUFFER  !fill 250,0	
+TXBUFFER  !pet "prova invio testo", 0, 128	
+
+	}
+.shifted_end
+
+* = $9fff                     ; fill up to -$9fff (or $bfff if 16K)
+     !byte 0
+!eof

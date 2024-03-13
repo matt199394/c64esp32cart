@@ -1,0 +1,1864 @@
+;compile with ACME
+;If someone would test the code without using EPROM can compile this file and run with SYS 50176
+;
+;M. Angelini
+
+!to "c400test.prg", cbm	; set output file and format
+
+!macro pushreg {
+	php												 
+	pha												 
+	txa												 
+	pha												 
+	tya												 
+	pha	
+}
+
+!macro popreg {   									 
+													
+	pla												 
+	tay												 
+	pla												 
+	tax												 
+	pla												 
+	plp
+}
+
+
+!addr	basout = $ffd2
+!addr	ptr1 = $fd            ;start FILE
+!addr	ptr2 = $fb            ;FILE SIZE
+!addr     RXFULL =  $02
+!addr     RYINDEX =  $03
+!addr     setPointer = $04
+
+!addr     chrin = $FFCF
+!addr     getin = $FFE4
+!addr     plot = $FFF0
+!addr     cia1 = $dc00  
+!addr     PRGEND = $080c    ; end of the Basic program
+
+               ;Koala Picture Code by Stranger on CSDb
+!addr PICTURE    = $6000
+!addr BITMAP     = PICTURE
+!addr VIDEO      = PICTURE+$1f40
+!addr COLOR      = PICTURE+$2327
+!addr BACKGROUND = PICTURE+$2710
+
+colorData = $e000
+screenRam = $0400
+colorRam = $d800
+cassette_buffer = $033c
+
+SCROLL_AT_LINE = 23
+RASTER_START = 50
+
+SCREEN = $0400 + SCROLL_AT_LINE * 40
+SPEED = 1
+
+
+
+;=========================================================================================================
+; main_init
+;=========================================================================================================
+
+		* = $c400	; set program counter
+    
+!zone main_init
+main_init
+    SEI
+    CLD
+    LDX #$FF
+    TXS
+    JSR $FF84    ; IOINIT - Initialize I/O
+
+    ; Initialize SID registers (not done by Kernal reset routine):
+
+    LDX #$17
+    LDA #$00
+.lp1 STA $D400,X
+    DEX
+    BPL .lp1
+
+    JSR $FF87 ;- Initialize System Constants
+
+    ; $FF87 is not actually called because it would do
+    ; a RAM-test which lasts a few seconds.
+    ; The following code does the same as RAMTAS but
+    ; without the RAM-test:
+
+    LDA #$00
+    TAY
+.lp2 STA $0002,Y
+    STA $0200,Y
+    STA $0300,Y
+    INY
+    BNE .lp2
+
+    LDX #$00
+    LDY #$A0
+    JSR $FD8C
+
+    JSR $FF8A    ; RESTOR - Restore Kernal Vectors
+    JSR $FF81    ; CINT - Initialize screen editor
+    CLI
+
+    JSR $E453    ; Initialize Vectors
+    JSR $E3BF    ; Initialize BASIC RAM
+    ;JSR $E422    ; Output Power-Up Message
+    LDX #$FB
+    TXS
+
+    sei
+
+    lda #<(nmi)     			 ; \
+	sta $0318       			 ;  \ Load our new nmi vector
+	lda #>(nmi)     			 ;	/ And replace the old vector to our own nmi routine
+	sta $0319       			 ; /  
+
+	lda #100										 
+	sta DELAY
+restart
+    lda #0
+    sta cassette_buffer
+	ldx #24							; zero SID sound register (1) 
+	lda #11									     		
+	sta $d021
+	lda #15						 
+	sta $d020	
+	lda #1	
+	sta 646                                   ; current character color
+	lda #0				
+clear_sid_loop					   ; Clear the SID registers
+	sta $d400, x									
+	dex										     
+	bne clear_sid_loop							    	 
+	jsr $E544		 				; Clear screen
+	lda #23							; Load 23 into accumulator and use it to
+ 	sta $D018						; Switch to LOWER CASE	
+
+	jsr print_string				; Call the start screen sub routine first
+
+!zone main_loop
+main_loop
+ 
+    jsr getin
+    beq main_loop
+    cmp #49              ;directory
+    beq .next
+    cmp #50              ;supermon+
+    beq .next
+    cmp #51              ;send message
+    beq .next
+    cmp #52              ;getWeather
+    beq .next
+    cmp #53              ;go BASIC
+    beq .run_prg
+    cmp #54              ;show KOALA
+    beq .show_KOALA
+    cmp #55              ;get NEWS
+    beq .get_news
+
+    bne main_loop
+
+.run_prg 
+    jmp run_prg
+
+.show_KOALA
+    jsr koala
+    jmp restart
+
+.get_news
+    jsr news
+    jmp restart
+
+.next
+    cmp #49     ;directory
+    sta OPTION
+    bne .next2
+    jsr set_irq_color
+    jmp directory
+
+.next2
+    cmp #50       ;supermon+
+    sta OPTION
+    bne .next3
+    jsr receive_buffer									 
+    jsr delay	
+
+    ;JSR $E394  
+    ;JSR $A659
+    ;JMP $A7AE
+    ;jmp $A871
+    
+    sei 
+    dec $01
+    cli
+    jmp $a000
+     
+    
+.next3
+    cmp #51       ;send message
+    sta OPTION
+    bne .next4
+    jsr sound
+    jsr delay
+    jsr send_buffer
+    jmp restart
+	
+.next4            ;getWeather
+    cmp #52
+    bne .next5
+    sta OPTION
+    jsr receive_buffer
+    jsr delay	
+    jsr $E544	
+    jsr print_text
+    jsr sound
+    jsr setTOD
+	
+.loop2	
+    lda $dc01
+    cmp #%11101111   ;space
+	bne .loop2
+
+	sei
+	lda #$31
+    sta $0314
+    lda #$ea
+    sta $0315    
+	cli
+	jmp restart
+	
+.next5
+	jmp main_loop
+
+
+;=========================================================================================================
+; directory
+;=========================================================================================================
+!zone directory
+directory
+
+        jsr receive_buffer										 
+        jsr delay
+
+	    jsr $E544
+.begin
+        lda #0
+        sta line_count
+        sta HOME_LINE	
+
+	    lda SIZE+2
+        sta ptr1
+        lda SIZE+3
+        sta ptr1+1 
+        jsr flash_line_0             
+        ldy #0
+        ldx SIZE+1 
+        beq .last
+
+      
+		
+.loop1  lda (ptr1),y        ; receive a page at a time
+        jsr basout
+        cmp #$0d
+        bne .next
+        inc line_count
+        lda line_count
+        cmp #24
+        bcs .reset_line
+	    jmp .next
+
+.next
+
+        iny
+        bne .loop1
+        inc ptr1 + 1
+        dex
+        bne .loop1
+
+.last   
+        ldx SIZE
+        beq .cursor_loop
+        
+.loop2  
+        lda (ptr1),y        ; receive the remaining bytes 
+        jsr basout
+        cmp #$0d
+        beq .incline 
+        jmp .next1
+.incline
+        inc line_count
+	    lda line_count
+	    cmp #24
+	    bcs .reset_line
+	    jmp .next1
+
+.reset_line
+	   lda #0
+	   sta line_count
+
+.cursor_loop
+       jsr flash_line_0
+	   jsr pointer_line_0
+	   
+.back	
+        jsr getin
+	    cmp #133                   ;F1 (begin)
+	    bne .page_down
+        jmp .begin
+
+.page_down
+	    cmp #136                   ;F7 (page_down)
+        bne .down
+        cpx #0
+        beq .last_page
+        jsr $E544
+        jmp .next
+
+.last_page  
+        jsr $E544      
+        jmp .next1
+.down
+        cmp #17                    ;cursor DOWN
+	    bne .up
+	    inc HOME_LINE
+	    lda HOME_LINE
+	    cmp #25
+	    bcc .ok
+	    jsr pointer_line_24
+	    jsr flash_line_24
+	    jmp .back
+.ok
+	    jsr set_default_irq
+	    jsr reset_default_color
+	    jsr inc_flash_line
+	    jsr inc_pointer_line 
+	    jsr set_irq_color  
+	    jmp .back
+
+.up  
+        cmp #145                   ;cursor UP
+        bne .quit
+	    dec HOME_LINE
+	    lda HOME_LINE
+	    bpl .ok1
+	    jsr pointer_line_0
+	    jsr flash_line_0
+	    jmp .back
+
+.ok1	
+        jsr set_default_irq
+	    jsr reset_default_color
+	    jsr dec_flash_line
+	    jsr dec_pointer_line
+	    jsr set_irq_color 
+	    jmp .back
+
+.quit
+        cmp #81               ;'q'             
+        bne .run 
+        jsr set_default_irq
+        jsr reset_default_color
+        jmp restart
+
+.run       
+        cmp #13
+        beq .equal
+	    jmp .back
+
+.equal
+        jsr set_default_irq
+        jsr reset_default_color
+        jsr read_from_screen
+        lda #51
+        sta OPTION
+        jsr send_buffer
+        jsr delay
+        lda #53
+        sta OPTION
+        jsr receive_buffer	
+        jsr delay
+        lda cassette_buffer
+        beq .exit
+       
+        jsr play_SID
+        jmp restart
+    
+.exit 
+
+        lda $0809
+        and #$0f
+        sta numA
+        lda $0808
+        asl 
+        asl 
+        asl 
+        asl 
+        ora numA
+        sta numA
+        lda $0807
+        and #$0f
+        sta numB
+        lda $0806
+        asl 
+        asl 
+        asl 
+        asl 
+        ora numB
+        sta numB
+
+        jsr bcdbin
+    
+        lda lores
+        sta start_prg + 1
+        lda hires
+        sta start_prg + 2
+    
+        jmp restart
+
+   
+start_prg 
+        jmp $080d
+
+    
+.next1
+        iny
+        dex
+        beq .end 
+        jmp .loop2
+.end    
+        jmp .cursor_loop
+
+
+;=========================================================================================================
+; set_default_irq
+;=========================================================================================================
+!zone set_default_irq
+set_default_irq
+        sei
+		lda #$31
+		sta $314
+		lda #$ea
+		sta $315
+		cli
+		rts
+
+;=========================================================================================================
+; set_irq_color
+;=========================================================================================================
+!zone set_irq_color
+set_irq_color
+                sei
+		lda #<irq_color 
+		sta $314
+		lda #>irq_color
+		sta $315
+		cli
+		rts
+
+;=========================================================================================================
+; irq_color
+;=========================================================================================================
+!zone irq_color
+irq_color
+            jsr colwash
+	    jmp $ea31
+
+;=========================================================================================================
+; flash_line_0
+;=========================================================================================================
+!zone flash_line_0
+flash_line_0
+        lda #$d8
+        sta color + 2
+        sta color1 + 2
+	    lda #0
+	    sta color + 1 
+	    sta color1 + 1
+	    rts
+
+;=========================================================================================================
+; flash_line_24
+;=========================================================================================================
+!zone flash_line_24
+flash_line_24
+        lda #$db
+        sta color + 2
+        sta color1 + 2
+	    lda #$c0
+	    sta color + 1
+	    sta color1 + 1 
+	    rts
+
+;=========================================================================================================
+; inc_flash_line
+;=========================================================================================================
+
+!zone inc_flash_line
+inc_flash_line
+        clc 
+	    lda color + 1
+	    adc #40
+	    sta color + 1
+	    sta color1 + 1
+	    lda color + 2
+	    adc #0
+	    sta color +2
+	    sta color1 + 2
+        rts
+
+;=========================================================================================================
+; dec_flash_line
+;=========================================================================================================
+!zone dec_flash_line
+dec_flash_line
+        sec 
+	    lda color + 1
+	    sbc #40
+	    sta color + 1
+	    sta color1 + 1
+	    lda color + 2
+	    sbc #0
+	    sta color +2
+	    sta color1 + 2
+        rts
+
+
+;=========================================================================================================
+; pointer_line_0
+;=========================================================================================================
+!zone pointer_line_0 
+pointer_line_0       
+        lda #$04
+	    sta ptr2+1
+	    lda #0
+	    sta ptr2 
+	    sta HOME_LINE
+	    rts 
+
+;=========================================================================================================
+; pointer_line_24
+;=========================================================================================================
+!zone pointer_line_24 
+pointer_line_24       
+        lda #$07
+	    sta ptr2+1
+	    lda #$c0
+	    sta ptr2 
+	    lda #24
+	    sta HOME_LINE
+	    rts 
+
+;=========================================================================================================
+; inc_pointer_line 
+;=========================================================================================================
+!zone inc_pointer_line 
+inc_pointer_line        
+        clc 
+	    lda ptr2
+	    adc #40
+	    sta ptr2
+	    lda ptr2+1
+	    adc #0
+	    sta ptr2+1
+	    rts 
+
+;=========================================================================================================
+; dec_pointer_line 
+;=========================================================================================================
+!zone dec_pointer_line 
+dec_pointer_line 
+        sec
+	    lda ptr2
+	    sbc #40
+	    sta ptr2
+	    lda ptr2 + 1
+	    sbc #0
+	    sta ptr2 + 1
+	    rts
+	
+;=========================================================================================================
+; bcdbin
+;I have modified the Macie routine that is for 3 digits decimal number.
+;this routine converts 5 digits decimal number (range 0-65535) to equivalent hex number. M.Angelini
+;=========================================================================================================
+!zone bcdbin        
+bcdbin
+        lda #0
+		sta lores		;result byteLo
+		sta hires		;result byteHi
+		lda numA		;load units and tens byte
+		and #$0f		;store
+		sta lores 		;units nibble
+		
+		lda numA		;tens nibble
+		lsr			
+		lsr
+		lsr
+		lsr
+		beq .goB1
+		sta addr1+1		;put tens nibble after ldx in adder subroutine
+		lda #$0a		;put 10 after adc opcode in adder subroutine
+		sta addr2+1
+		lda #$0			;2 byte addition
+		sta addr3+1
+		jsr addr1	
+		
+.goB1	lda numB		;load handreds and miles byte
+		pha
+		and #$0f
+		beq .goB2
+		sta addr1+1		;put hundreds nibble after ldx...
+		lda #$64		;put 100 ($64) after adc opcode... 
+		sta addr2+1
+		lda #$0
+		sta addr3+1
+		jsr addr1
+.goB2	pla
+		lsr
+		lsr
+		lsr
+		lsr
+		beq .goC1
+		sta addr1+1     ;put thousands nibble after ldx...
+		lda #$e8		;add 1000, first add lobyte $e8
+		sta addr2+1
+		lda #$03		;...after add hibyte $03
+		sta addr3+1
+		jsr addr1
+		
+.goC1	lda numC		;load tens of thousands
+		and #$0f
+		beq .goout
+		sta addr1+1		;add 10000 ($2710)
+		lda #$10
+		sta addr2+1
+		lda #$27
+		sta addr3+1
+		jsr addr1
+.goout	rts
+		
+addr1   ldx #00			;numbers of additions
+		clc
+loop	lda lores
+addr2	adc #00			;$a, $64; $e8, $10
+		sta lores
+		lda hires
+addr3	adc #00			;$0, $03, $27
+		sta hires
+		dex
+		bne loop
+		rts
+						;for 65535	
+numA 	!byte 00		;numA=$35 
+numB 	!byte 00		;numB=$55
+numC 	!byte 00		;numC=$06
+lores	!byte 00		
+hires 	!byte 00	
+
+;=========================================================================================================
+; NMI ROUTINE, RECEIVE DATA FROM ESP32 AND WRITE INTO C64 RAM
+;=========================================================================================================
+!zone nmi			; When the ESP32 loads a byte in the 74ls244 it pulls the NMI line low
+nmi		
+     
+	bit $dd0d											 
+	+pushreg
+	lda setPointer
+	beq @next3
+	ldy RYINDEX									    	
+	lda $df00
+	sta ptr2,y     
+	sta SIZE,y      ;SIZE 0,1 file size; SIZE 2,3 start file
+	iny
+	sty RYINDEX
+	cpy #4
+	bcc @next4
+	ldy #0
+	sty RYINDEX
+	sty setPointer
+
+@next4    
+    jmp exit_nmi
+
+
+
+@next3  
+    ldy RYINDEX	    
+    ldx ptr2+1
+    beq @last
+
+    lda $df00               ; receive a page at a time
+    sta (ptr1),y
+    inc $d020
+        
+    iny
+    bne @next2
+    dex 
+    stx ptr2+1
+    inc ptr1 + 1
+	 
+@next2  
+    sty RYINDEX
+
+    jmp exit_nmi
+        
+        
+        
+@last
+    ldx ptr2
+    bne @next1
+	lda #1									        
+	sta RXFULL  									
+	jmp  exit_nmi									
+        
+        
+@next1  
+    lda $df00             
+    sta (ptr1),y
+    inc $d020
+    iny
+    sty RYINDEX
+    dex
+    stx ptr2
+       
+																															 
+exit_nmi											 
+	 									 
+	+popreg									    	 
+	rti												 
+
+
+;=========================================================================================================
+; SUB ROUTINE, WAIT FOR READY TO RECIEVE SIGNAL FROM ESP32
+;=========================================================================================================
+!zone wait_for_ready_to_receive
+wait_for_ready_to_receive  			; wait for ready to receive before we send a byte
+												 
+	lda $df00						; read a value from IO2
+	cmp #128						; compare with 128
+	bcc wait_for_ready_to_receive	; if smaller try again
+	rts	
+ 
+;=========================================================================================================
+; SUB ROUTINE, send OPTION byte to receive data
+;=========================================================================================================  
+
+!zone receive_buffer
+receive_buffer							    	
+		
+	lda #0                            		 
+	sta RYINDEX								 
+	sta RXFULL 								 
+	lda #1
+	sta setPointer 
+	
+	jsr wait_for_ready_to_receive					
+	lda OPTION							    
+	sta $de00
+	rts
+     												
+wait_message_complete					    
+	lda RXFULL									 
+	beq wait_message_complete						 
+	rts
+
+;=========================================================================================================
+; SUB ROUTINE, DELAY
+;=========================================================================================================    
+!zone delay
+delay						; the delay sub routine is just a loop inside a loop
+							
+    ldx #00					; the inner loop counts up to 255
+							
+.loop						; the outer loop repeats that 255 times
+							
+    cpx DELAY				
+    beq .enddelay									 
+    inx												
+    ldy #00											
+ 													
+.delayloop												
+													
+    cpy #255										   
+    beq .loop										        
+    nop												
+    nop											
+    iny												
+    jmp .delayloop 									   
+													
+.enddelay											     
+												
+    rts	
+
+;=========================================================================================================
+; SUB ROUTINE, print_text
+;========================================================================================================= 
+!zone print_text
+             
+print_text
+
+        lda SIZE+2
+        sta ptr1
+        lda SIZE+3
+        sta ptr1+1              
+        ldy #0
+        ldx SIZE+1 
+        beq .last
+.loop1  
+        lda (ptr1),y        ; receive a page at a time
+        jsr basout
+       
+        iny
+        bne .loop1
+        inc ptr1 + 1
+        dex
+        bne .loop1
+
+.last   
+        ldx SIZE
+        beq .end
+        
+.loop2   
+        lda (ptr1),y        ; receive the remaining bytes        
+        jsr basout
+       
+        iny
+        dex
+        bne .loop2
+
+.end    rts
+
+
+;=========================================================================================================
+; SUB ROUTINE, SEND TXBUFFER TO ESP32
+;=========================================================================================================
+!zone send_buffer
+send_buffer										      
+	
+	lda OPTION									     		
+	sta $de00	
+
+ 	ldx #0					; x will be our index when we loop over the TXBUFFER
+@sendms   								
+										
+	jsr wait_for_ready_to_receive		; wait for ready to receive (bit D7 goes high)	    
+	lda TXBUFFER,x				; load a byte from the TXBUFFER with index x
+	sta $de00 	                 	; send it to IO1	
+	cmp #128    				; if the last byte was 128, the buffer is finished                   
+	beq @exit				; exit in that case     
+	inx					; increase the x index
+	jmp @sendms  				; jump back to send the next byte
+										
+@exit									
+	rts		
+ 
+
+;=========================================================================================================
+; SUB ROUTINE, sound
+;=========================================================================================================
+sound
+	lda #0
+	sta $d400
+	sta $d407
+	lda #143 					; set volume to max
+	sta $d418					; and store it here
+	lda PITCH					; load the needed sound pitch (higher value = higher pitch)
+	sta $d401					; and store it here (voice 1)
+	sta $d408					; also here (voice 2)	
+		
+	lda #15						;
+	sta $d405					; set attack / decay lenght (voice 1)
+	sta $d40c					; set attack / decay lenght (voice 2)
+	lda #249					;
+	sta $d406					; set volume sustain / release lenght (voice 1)
+	sta $d40d					; set volume sustain / release lenght (voice 2)
+								
+	lda #17
+	sta $d404					; set triangle wave form (bit 4) and gate bit 0 to 1 (sound on) 
+	lda #16						;
+	sta $d404					; set gate bit 0 to 0 (sound off)
+	rts
+
+
+;=========================================================================================================
+; SUB ROUTINE, print string
+;========================================================================================================= 
+!zone print_string
+
+print_string
+        ldx #0
+	    beq +			; enter loop
+
+-	    jsr basout	    ; output character
+	    inx		        ; advance pointer
++	    lda .string, x	; get character
+	    bne -		    ; check whether last
+	    rts
+
+.string	       
+               !pet " --------------------------------------", 13
+               !pet "        *** C64 ESP32 Cart ***", 13
+               !pet "        *** by M.Angelini  ***", 13
+               !pet " --------------------------------------", 13,13
+               !pet "1.SD directory", 13
+               !pet "2.Supermon+", 13
+               !pet "3.Send message", 13
+               !pet "4.Get time & weather", 13
+               !pet "5.Go to BASIC", 13 
+               !pet "6.Show KOALA img", 13
+               !pet "7.Get NEWS", 13, 0
+               
+              
+
+;=========================================================================================================
+; SUB ROUTINE, print notSIDfile
+;========================================================================================================= 
+!zone print_notSIDfile
+
+print_notSIDfile
+        ldx #0
+	    beq +			; enter loop
+
+-	    jsr basout	    ; output character
+	    inx		        ; advance pointer
++	    lda .string1, x	; get character
+	    bne -		    ; check whether last
+	    rts
+
+.string1	 !pet "Not a SID file", 13, 0
+       
+
+;=========================================================================================================
+;    Function for text input
+;========================================================================================================= 
+!zone clear_lines
+
+clear_lines
+
+    ldx HOME_LINE			; Clear the text input box
+.clear_l				    ; Start of clear loop
+	jsr $E9FF  	   		    ; Clear line in register x
+	cpx LIMIT_LINE			; Are there more lines to clear?
+	beq set_cursor			; If not, jmp to !all_clean and exit the loop
+	inx							; Increase x register
+	jmp .clear_l			; Jump back to the start of the loop and clear the next line
+
+;=========================================================================================================
+;    SUB ROUTINE, set_cursor (raw, column, color)
+;========================================================================================================= 
+									    
+set_cursor
+
+    clc              		; Clear carry so we can SET the cursor position
+	ldx HOME_LINE    		; Select row
+	ldy HOME_COLM    		; Select column
+	jsr $E50C        		; Set cursor	
+	;lda #0 
+	;sta $00cc   		    ; Show cursor 
+	lda crs_color           ; Load 5 in accumulator (petscii code for color white)
+	jsr $ffd2        		; Output that petscii code to screen to change the cursor to white
+	rts
+
+;=========================================================================================================
+; SUB ROUTINE, READ TEXT FIELD FROM SCREEN
+;=========================================================================================================   
+!zone read_from_screen
+read_from_screen						    
+										
+	ldy #0					 
+								
+.read_character					
+						     
+	lda (ptr2),y				 
+	sta TXBUFFER,y			 
+	iny					     
+	cmp #32					 
+	bne .read_character		 
+	lda (ptr2),y
+	cmp #32						 
+	beq .exit
+	sta TXBUFFER,y		 
+	iny					     
+	jmp .read_character			 
+.exit						     
+	dey					     
+	lda #128				 	
+	sta TXBUFFER,y				; Store 128 in the buffer to finish the buffer
+	rts  					 
+
+
+;=========================================================================================================
+; SUB ROUTINE, Shift the message screen up. (so not the whole screen, just the messages)
+;========================================================================================================= 
+!zone Shift_Screen_up
+Shift_Screen_up							    
+								; this routine should behave a little bit different if we are in the private chat screen
+	;lda SCREEN_ID				; load the screen id				
+	;cmp #3						; 3 is the private chat screen
+	;bne !m+					; if not goto to m label		
+	;ldx #120					; if this is the private chat we start shifting up but ignore the first 3 lines (120 characters)
+	;jmp !l+					; jump into the loop.			
+
+!zone							;	
+m								; if we are on the main chat screen, we start shifting at zero.
+    ldx #0					    ; x is our index for reading and writing the screen
+.l lda $428,x					; load the character
+    sta $400,x					; write the character somewhere else
+    lda $D828,x					; load the color
+    sta $D800,x					; write the color somewhere else
+    inx   						;
+    cpx #240					; 6 lines
+    bne .l
+ !zone   
+    ldx #$00
+.l lda $518,x    
+    sta $4F0,x
+    lda $D918,x
+    sta $D8F0,x
+    inx   
+    cpx #240					; 6 lines
+    bne .l   
+ !zone   
+    ldx #$00
+.l lda $608,x    
+    sta $5E0,x
+    lda $DA08,x
+    sta $D9E0,x
+    inx   
+    cpx #240				    ; 6 lines
+    bne .l
+ !zone   
+    ldx #$00
+.l lda $6F8,x    
+    sta $6D0,x
+    lda #32						; load the space character
+    sta $6F8,x					; and write it to clear the original character (this is only needed on the last lines)
+    lda $DAF8,x
+    sta $DAD0,x
+    inx   
+    cpx #80						; 2 lines
+    bne .l
+    rts	
+
+;=========================================================================================================
+; SUB ROUTINES, to draw horizontal lines on screen (used in the menus)
+;========================================================================================================= 
+!zone draw_top_menu_lines 
+draw_top_menu_lines				; this first routine uses the second routine to draw 
+	lda #0						; a line on line 0 and line 2
+	sta $fb								
+	jsr draw_menu_line					
+	lda #2								
+	sta $fb								
+	jsr draw_menu_line					
+	rts									
+;=========================================================================================================
+draw_menu_line						
+	ldx $fb						; de desired position of the line is stored in $fb
+	lda screen_lines_low,x		; look up the corresponding address in screen RAM (low byte first)
+	sta $fb						; store that in $fb to create a pointer to screen RAM
+	sta $fd						; store the same low byte to create a pointer to the corresponding address in color RAM
+	lda screen_lines_high,x		; load the high byte of the address of screen RAM
+	sta $fc						; store that in $fc, now we have a pointer $fb,$fc to the screen RAM
+	lda color_lines_high,x		; load the high byte of the address of color RAM
+	sta $fe						; store that in $fe, now we have a pointer $fd,$fe to the color RAM
+	ldy #0						; y is the itterator for the loop
+.loop							; start the loop
+	lda #64						; load the screen code for a horizontal bar
+	sta ($fb),y					; put it on screen
+	lda #5						; load the color green
+	sta ($fd),y					; put it on screen
+	iny							; increase y
+	cpy #40						; if y reaches 40, exit the loop
+	bne .loop					; else, continue the loop
+    rts						; return from subroutine
+
+;=========================================================================================================
+; SUB ROUTINE, WAIT FOR CURSOR INVISIBLE PHASE
+;=========================================================================================================    
+!zone wait_cursor_invisible
+wait_cursor_invisible			; wait for the cursor to disapear before moving it
+	tay							; transfer the accumulator to y
+.waitloop						; start a loop
+    lda #$00  		            ; show the cursor (the program can hang without this line in this loop..)
+    sta $cc
+	lda $cf 					; when the value in this address goes zero, the cursor is in it's invisible phase        		
+	bne .waitloop			    ; wait for zero
+	tya							; transfer y back to the accumulator
+	rts										
+
+
+;=========================================================================================================
+; Run PRG file
+;=========================================================================================================
+!zone run_prg
+run_prg
+    ;lda #<PRGEND
+    ;sta $2d
+    ;sta $ae
+    ;lda #>PRGEND
+    ;sta $2e
+    ;sta $af
+
+    jsr $a659    ; reset execute pointer and do clr
+    jsr $a533    ; rechain lines
+    jsr $E37B 	 ;BASIC warm start entry point
+    ;jsr $E394    ;BASIC cold start entry point
+    jmp $a7ae    ; basic warm start
+    ;jmp $a871    ;perform RUN
+
+;=========================================================================================================
+; setTOD
+;=========================================================================================================
+!zone setTOD
+setTOD
+        lda screenRam + 6
+        sta time
+        lda screenRam + 7
+        sta time + 1
+        lda screenRam + 9
+        sta time + 2
+        lda screenRam + 10
+        sta time + 3
+        lda screenRam + 12
+        sta time + 4
+        lda screenRam + 13
+        sta time + 5
+
+numconv ldx #5
+.loop	lda time,x
+		sec
+		sbc #48
+		sta time,x
+		dex
+		bpl .loop
+		
+		
+bcdconv	
+		ldx #5
+		ldy #0
+.loop2	lda time-1,x
+		asl
+		asl
+		asl
+		asl
+		ora time,x
+		sta second,y
+		iny
+		dex
+		dex
+		bpl .loop2
+		
+		lda second+2
+		cmp #$13
+		bcc .nochange
+		sei
+		sed
+		sec
+		sbc #$12
+		ora #$80
+		sta second+2
+		
+.nochange 
+        cld
+		cli
+		
+		lda second+2
+		ldx second+1
+		ldy second
+		
+		sty cia1+9
+		stx cia1+10
+		sta cia1+11
+		lda #0
+		sta cia1+8
+		
+		lda cia1+15  ;cia1 control register B 
+		and #$7f
+		sta cia1+15  ;Select Time of Day
+		
+		lda $dc0e    ;cia1 control register A
+		ora #$80
+		sta $dc0e    ;Time of Day Clock frequency 1=50 Hz 0=60 Hz
+		
+		sei
+		lda #<update
+		sta $314
+		lda #>update
+		sta $315
+		cli
+
+		lda #15
+		sta toggle
+		rts
+
+;=========================================================================================================
+; update time
+;=========================================================================================================
+!zone update
+     		
+update	
+        lda toggle
+		dec toggle
+		beq .start
+		jmp $ea31
+		
+.start	lda #15
+		sta toggle
+		
+		ldx #2
+.copy	lda cia1+9,x
+		sta second,x
+		dex
+		bpl .copy
+		lda cia1+8
+		cmp #5
+		bcs .noblink
+		lda #58
+		sta screenRam + 8
+		sta screenRam + 11
+		bcc .next
+.noblink lda #32
+		sta screenRam + 8
+		sta screenRam + 11
+		
+.next	sei
+		sed
+		lda second+2
+     	bmi .pm
+		cmp #$12
+		bne .next1
+		lda #0
+		sta second+2
+.next1	cld
+		cli
+		jmp .print
+.pm		and #$1f
+		cmp #$12
+		beq .day
+		clc
+		adc #$12
+		sta second+2
+		cld
+		cli
+		bcc .print
+	
+.day    cld
+        cli
+		sta second+2
+		
+		
+.print    
+        lsr
+		lsr
+		lsr
+		lsr
+		clc
+		adc #48
+		sta screenRam + 6
+		
+		lda second+2
+		and #$0f
+		clc
+		adc #48
+		sta screenRam + 7
+		
+		lda second+1
+		and #$f0
+		lsr
+		lsr
+		lsr
+		lsr
+		clc
+		adc #48
+		sta screenRam + 9
+		lda second+1
+		and #$0f
+		clc
+		adc #48
+		sta screenRam + 10
+		
+		lda second
+		and #$f0
+		lsr
+		lsr
+		lsr
+		lsr
+		clc
+		adc #48
+		sta screenRam + 12
+		lda second
+		and #$0f
+		clc
+		adc #48
+		sta screenRam + 13
+		
+ 	    jmp $ea31
+
+
+;=========================================================================================================
+; koala
+;=========================================================================================================
+!zone koala
+koala	 
+        ;lda $DD00
+        ;and #%11111100
+        ;ora #%00000010 ;<- bank1: $4000-$7fff
+        ;sta $DD00
+
+        lda #$00
+        sta ptr1
+        lda #$60
+        sta ptr1+1 
+        lda #$00
+        sta ptr2
+        lda #$20
+        sta ptr2+1
+
+        ldy #0
+        ldx #$1f            ;size hibyte
+        beq .last
+.loop1  lda (ptr1),y        ; receive a page at a time
+        sta (ptr2),y
+        
+        iny
+        bne .loop1
+        inc ptr1 + 1
+        inc ptr2 + 1
+        dex
+        bne .loop1
+
+.last   ldx #$3f              ;size lobyte
+        beq .end
+        
+.loop2  lda (ptr1),y        ; receive the remaining bytes        
+        sta (ptr2),y
+        iny
+        dex
+        bne .loop2
+
+.end    
+         
+
+        jsr copy_video_data
+
+ 
+        lda #$3b ;<--- Turn on bitmap mode
+        ldx #$18 ;<--- Turn on all bitmap characters     
+        ldy #$03
+        sta $d011
+        stx $d018
+        stx $d016
+        sty $dd00
+.hold	
+        lda $dc01
+        cmp #%11101111   ;space
+	    bne .hold
+
+
+	    lda #$1b ;<--- Turn on bitmap mode
+        ldx #$17 ;<--- Turn on all bitmap characters
+        ldy #$c8
+        sta $d011
+        stx $d018
+        sty $d016
+
+	    ;lda $DD00
+        ;and #%11111100
+        ;ora #%00000011 ;<- bank0: $0000-$3fff
+        ;sta $DD00
+
+        rts
+
+;=========================================================================================================
+; copy_video_data
+;=========================================================================================================
+!zone copy_video_data
+copy_video_data
+        
+        lda #$00
+        sta $d020               ; Border Color
+        lda BACKGROUND
+        sta $d021               ; Screen Color
+
+; Transfers Video and Color
+        ldx #$00
+; Transfers video data
+.LOOP
+        lda VIDEO,x
+        sta $0400,x
+        lda VIDEO+$100,x
+        sta $0500,x
+        lda VIDEO+$200,x
+        sta $0600,x
+        lda VIDEO+$2e8,x
+        sta $06e8,x
+; Transfers color data
+        lda COLOR,x
+        sta $d800,x
+        lda COLOR+$100,x
+        sta $d900,x
+        lda COLOR+$200,x
+        sta $da00,x
+        lda COLOR+$2e8,x
+        sta $dae8,x
+        inx
+        bne .LOOP
+        rts
+
+
+;=========================================================================================================
+; get NEWS
+;=========================================================================================================
+!zone news
+news   
+       lda #57
+       sta OPTION
+       jsr receive_buffer										 
+       jsr delay
+
+       lda #58
+       sta OPTION
+       jsr receive_buffer										 
+       jsr delay
+
+       ;jsr $E544
+       jsr sound
+
+.wait				    
+	   lda RXFULL									 
+	   beq .wait
+
+       jsr set_scroller_irq
+
+       sei
+       lda #$81
+	   sta $dc0d
+	   sta $dd0d
+	   lda #$00
+	   sta $d019
+	   sta $d01a
+	   lda $d016
+	   and #$f8
+	   ora #8
+	   sta $d016
+	   lda #$31
+	   sta $0314
+	   lda #$ea
+	   sta $0315
+	   jsr $FF84  ;initialize I/O devices
+	   cli
+
+       rts
+
+;=========================================================================================================
+; pet2scr
+;=========================================================================================================
+!zone pet2scr
+pet2scr
+   	eor #$e0
+	clc
+	adc #$20
+	bpl .cont
+	adc #$40
+	bpl .cont
+	eor #$a0
+.cont	
+    rts
+       
+
+;=========================================================================================================
+; set scroller IRQ
+;=========================================================================================================
+!zone set_scroller_irq
+set_scroller_irq
+
+        jsr $ff81                               ; Init screen
+        lda #0
+	    sta ptr1
+	    lda #$30
+	    sta ptr1+1
+
+        ; default is #$15  #00010101
+        lda #%00011110
+        sta $d018                               ; Logo font at $3800
+
+        sei
+
+        ; turn off cia interrups
+        lda #$7f
+        sta $dc0d
+        sta $dd0d
+
+        lda $d01a                               ; enable raster irq
+        ora #$01
+        sta $d01a
+
+        lda $d011                               ; clear high bit of raster line
+        and #$7f
+        sta $d011
+
+        ; irq handler
+        lda #<irq1
+        sta $0314
+        lda #>irq1
+        sta $0315
+
+        ; raster interrupt
+        lda #233
+        sta $d012
+
+        ; clear interrupts and ACK irq
+        lda $dc0d
+        lda $dd0d
+        asl $d019
+
+        lda #$00
+        tax
+        tay
+
+        lda #0
+        ;jsr MUSIC_INIT          ; Init music
+
+        cli
+
+.mainloop
+        lda sync                ; init sync
+        and #$00
+        sta sync
+.back       
+        cmp sync
+        beq .back
+
+        jsr scroll1
+
+        lda $dc01
+        cmp #%11101111   ;space
+	    bne .mainloop
+       
+        rts
+
+;=========================================================================================================
+; irq1
+;=========================================================================================================
+!zone irq1		
+irq1  
+		asl $d019
+
+        lda #<irq2
+        sta $0314
+        lda #>irq2
+        sta $0315
+
+        lda #250
+        sta $d012
+
+        lda scroll_x
+        sta $d016
+
+        jmp $ea81
+
+
+;=========================================================================================================
+; irq2
+;=========================================================================================================
+!zone irq2		
+irq2 
+		asl $d019
+
+        lda #<irq1
+        sta $0314
+        lda #>irq1
+        sta $0315
+
+        lda #233
+        sta $d012
+
+       
+
+        ; no scrolling, 40 cols
+        lda #%00001000
+        sta $d016
+
+        inc sync
+
+
+        ;inc $d020      ; DEBUG
+
+        ;jsr MUSIC_PLAY
+
+        ;dec $d020      ; DEBUG
+
+        jmp $ea31
+
+;=========================================================================================================
+; scroll1
+;=========================================================================================================
+!zone scroll1
+
+scroll1
+        dec speed
+        bne .endscroll
+
+        ; restore speed
+        lda #SPEED
+        sta speed
+
+        ; scroll
+        dec scroll_x
+        lda scroll_x
+        and #07
+        sta scroll_x
+        cmp #07
+        bne .endscroll
+
+        ; move the chars to the left
+        ldx #0
+.loop
+        lda SCREEN+1,x                      ; scroll top part of 1x2 char
+        sta SCREEN,x
+        lda SCREEN+40+1,x                   ; scroll bottom part of 1x2 char
+        sta SCREEN+40,x
+        inx
+        cpx #39
+        bne .loop
+
+        ; put next char in column 40
+        ldy 0
+        lda (ptr1),y
+        cmp #$ff
+        bne .next
+
+        ; reached $ff ? Then start from the beginning
+        lda #0
+        sta half_char
+	    sta ptr1
+	    lda #$30
+	    sta ptr1+1
+        lda (ptr1),y
+.next   
+        ora half_char                       ; right part ? left part will be 0
+        sta SCREEN+39                       ; top part of the 2x2
+        ora #$80                            ; bottom part is 128 chars ahead in the charset
+        sta SCREEN+40+39                    ; bottom part of the 1x2 char
+                                           
+        lda half_char                       ; half char
+        eor #$40
+        sta half_char
+        bne .endscroll
+
+        ; only inc lines_scrolled after 2 chars are printed
+        inc ptr1
+	    lda ptr1
+	    bne .endscroll
+	    inc ptr1+1
+       
+.endscroll
+        rts
+  		
+;=========================================================================================================
+; colwash routine
+;=========================================================================================================
+!zone colwash 	
+		
+colwash     
+                        lda colourdelay 
+			cmp #$4
+			beq colourok 
+			inc colourdelay 
+			rts 
+colourok	
+                        lda #0
+			sta colourdelay
+			ldx tmp 
+			lda colour,x 
+			ldy #39
+color		        
+            sta $d800,y
+            ;sta $d800 + 40,y
+			dey
+			bpl color
+			inx 
+			cpx #13
+			beq resetcolourroutine
+			inc tmp
+			rts
+
+resetcolourroutine
+			ldx #0
+			stx tmp 
+			rts
+
+;=========================================================================================================
+; reset_default_color
+;=========================================================================================================
+!zone reset_default_color 	
+		
+reset_default_color     
+ 
+			lda CHAR_COLOR
+			ldy #39
+color1		        
+            sta $d800,y
+			dey
+			bpl color1
+			rts
+
+		
+;=========================================================================================================
+; Run SID file
+;=========================================================================================================
+!zone play_SID
+play_SID
+
+    ;1,2 file size; 3,4 start file
+    lda cassette_buffer + 1
+    sta SID_init + 1
+    lda cassette_buffer + 2
+    sta SID_init + 2
+    lda cassette_buffer + 3
+    sta SID_play + 1
+    lda cassette_buffer+ 4
+    sta SID_play + 2
+
+    lda #56
+    sta OPTION
+    jsr receive_buffer
+    jsr delay	
+    jsr $E544	
+	jsr print_text
+
+    lda #55
+    sta OPTION
+    jsr receive_buffer
+    jsr delay
+   										
+    sei
+    dec $01
+	ldx #<IRQ_SIDplay	
+	ldy #>IRQ_SIDplay	
+	stx $0314
+	sty $0315
+
+	lda #53	;RASTER POS
+	sta $d012
+
+	lda #$7f	;CIA ENABLE INTERRUPT
+	sta $dc0d
+	lda #$1b	
+	sta $d011	;VERTICAL POS 
+	lda #$01
+	sta $d01a	;RASTER INPUT SIGNALS FROM VIC (SYNC)
+	lda #0
+	tax		 
+	tay	
+	dec $01
+SID_init
+    jsr $1000
+    inc $01
+	cli
+	
+.loop2	
+    lda $dc01
+    cmp #%11101111   ;space
+	bne .loop2
+	jsr stop_SID
+	rts
+
+;=========================================================================================================
+; IRQ_SIDplay
+;=========================================================================================================
+!zone IRQ_SIDplay
+IRQ_SIDplay
+	asl $d019
+	inc $d020
+	dec $01
+SID_play
+	jsr $1003
+	inc $01
+	dec $d020
+	jmp $ea31
+
+;=========================================================================================================
+; stop SID
+;=========================================================================================================
+!zone stop_sid
+stop_SID
+		sei
+		lda #$81
+		sta $dc0d
+		sta $dd0d
+		lda #$00
+		sta $d019
+		sta $d01a
+		lda #$31
+		sta $0314
+		lda #$ea
+		sta $0315
+		
+		lda #0
+		ldy #25
+.loop	sta $d400-1,y
+		dey
+		bne .loop
+		jsr $FF84  ;initialize I/O devices
+		cli
+		rts 
+
+!zone CONSTANTS
+;=========================================================================================================
+; CONSTANTS
+;=========================================================================================================
+screen_lines_low  		!byte $00,$28,$50,$78,$A0,$C8,$F0,$18,$40,$68,$90,$b8,$e0,$08,$30,$58,$80,$a8,$d0,$f8,$20,$48,$70,$98,$c0
+screen_lines_high 		!byte $04,$04,$04,$04,$04,$04,$04,$05,$05,$05,$05,$05,$05,$06,$06,$06,$06,$06,$06,$06,$07,$07,$07,07,$07
+color_lines_high 		!byte $d8,$d8,$d8,$d8,$d8,$d8,$d8,$d9,$d9,$d9,$d9,$d9,$d9,$da,$da,$da,$da,$da,$da,$da,$db,$db,$db,$db,$db
+;=========================================================================================================
+;    global variable
+;========================================================================================================= 
+DELAY           !byte 0
+crs_color	!byte 0
+PITCH	        !byte 125	
+OPTION	        !byte 0	
+SIZE            !byte 0,0,0,0
+HOME_LINE	!byte 0			  ; the start line of the text input box
+HOME_COLM	!byte 0			  ; the start column of the text input box
+LIMIT_LINE	!byte 0			  ; the end line of the text input box 
+LIMIT_COLM	!byte 0			  ; the end column of the text input box
+CHAR_COLOR      !byte 1
+time	 !byte 	0,0,0,0,0,0	
+second   !byte 0,0,0
+toggle   !byte 0
+IS_SID_FILE !byte 0
+line_count  !byte 0
+
+smooth 	!byte 7
+
+colour      !byte 6,2,4,5,3,7,1,7,3,5,4,2,6,0               ;14,10,12,13,11,15,10,15,11,13,12,10,14,0	
+tmp		    !byte 0
+colourdelay !byte 0
+
+
+;!align  255, 0
+	
+TXBUFFER  !pet "prova invio testo", 128	
+RXBUFFER  !byte 0
+
+
+sync               !byte 1
+scroll_x           !byte 7
+speed              !byte SPEED
+lines_scrolled     !byte 0
+half_char          !byte 0
+
+label              !scr "hello world! abc def ghi jkl mnopqrstuvwxyz 01234567890 .()"
+                   !byte $ff
+
+
+;* = $3800
+;                   !bin "2x2-inverted-chars.raw"
+
+	
+!eof

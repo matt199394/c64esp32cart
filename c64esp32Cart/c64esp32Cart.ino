@@ -1,4 +1,28 @@
-
+/*
+ * Inspired on  chat64 cart by Bart Venneker and Theo van den Beld, same hardware with some midifications:
+ * - SD card
+ * - 27C512 EEPROM
+ * - add jumpers to select 8k memory inside EEPROM
+ * - add transistor to control EXROM line
+ * - standart or ultiMax mode jumper
+ * 
+ * About the skech:
+ * The sketck is a working progress, there are many bugs to fix, expecialy SD directory code.
+ * Not all SIDs file are playable, same as PRG file.
+ * Feaures:
+ * - Run PRG file
+ * - play SID files and show SID info
+ * - show koala images
+ * - show current time
+ * - show current weather
+ * - show news by using 2x2 charset
+ * 
+ * Any help is appreciate,
+ * Have fun
+ * 
+ * M.Angelini
+ *
+*/
 #include <WiFi.h>
 #include <NTPClient.h>
 #include <HTTPClient.h>
@@ -16,12 +40,15 @@
 const char *ssid     = "SSID";
 const char *password = "PASSWORD";
 
-//URL Endpoint for the API
+//forecast API http://api.openweathermap.org
+
 String URL = "http://api.openweathermap.org/data/2.5/weather?";
 String openweatherApiKey = "openweatherApiKei";
 // Replace with your location Credentials
 String lat = "43.06071239857755";
 String lon = "10.614730891178944";
+
+//news API: https://newsapi.org
 
 String newsApiKey = "newsApiKey";
 

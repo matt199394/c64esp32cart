@@ -37,20 +37,20 @@
 //#include "SID.h"
 
 
-const char *ssid     = "SSID";
-const char *password = "PASSWORD";
+const char *ssid     = "Home&Life SuperWiFi-0B6D";
+const char *password = "3ME3YP74UU7EU47Q";
 
 //forecast API http://api.openweathermap.org
 
 String URL = "http://api.openweathermap.org/data/2.5/weather?";
-String openweatherApiKey = "openweatherApiKei";
+String openweatherApiKey = "be8d2977e145c20fad2244e6c194d78f";
 // Replace with your location Credentials
 String lat = "43.06071239857755";
 String lon = "10.614730891178944";
 
 //news API: https://newsapi.org
 
-String newsApiKey = "newsApiKey";
+String newsApiKey = "a8255caf5f42488a9ac8a8eea8e687cd";
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
@@ -343,7 +343,7 @@ void getWeatherData(){
     HTTPClient http;
 
     //Set HTTP Request Final URL with Location and API key information
-    http.begin(URL + "lat=" + lat + "&lon=" + lon + "&units=metric&appid=" + newsApiKey);
+    http.begin(URL + "lat=" + lat + "&lon=" + lon + "&units=metric&appid=" + openweatherApiKey);
 
     // start connection and send HTTP Request
     int httpCode = http.GET();

@@ -16,6 +16,8 @@ Feaures:
 - show current time
 - show current weather
 - show news by using 2x2 charset
+
+  Video to show the cart in action: https://www.youtube.com/watch?v=Q0KYe2STK2w
   
 Any help is appreciate,
 Have fun!

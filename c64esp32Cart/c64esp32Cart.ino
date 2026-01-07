@@ -37,8 +37,8 @@
 //#include "SID.h"
 
 
-const char *ssid     = "Home&Life SuperWiFi-0B6D";
-const char *password = "3ME3YP74UU7EU47Q";
+const char *ssid     = "xxxx";
+const char *password = "xxxx";
 
 //forecast API http://api.openweathermap.org
 

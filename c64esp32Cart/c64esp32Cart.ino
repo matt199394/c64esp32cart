@@ -43,14 +43,14 @@ const char *password = "xxxx";
 //forecast API http://api.openweathermap.org
 
 String URL = "http://api.openweathermap.org/data/2.5/weather?";
-String openweatherApiKey = "be8d2977e145c20fad2244e6c194d78f";
+String openweatherApiKey = "xxxx";
 // Replace with your location Credentials
 String lat = "43.06071239857755";
 String lon = "10.614730891178944";
 
 //news API: https://newsapi.org
 
-String newsApiKey = "a8255caf5f42488a9ac8a8eea8e687cd";
+String newsApiKey = "xxxxx";
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");

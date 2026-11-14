@@ -1,0 +1,5 @@
+# credenziali locali
+c64esp32Cart/secrets.h
+
+# dump completo della flash: contiene NVS, WiFi e calibrazione
+firmware_backup/

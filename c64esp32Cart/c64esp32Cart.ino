@@ -22,12 +22,16 @@
  * 
  * M.Angelini
  *
+ * Scheda: MH ET LIVE ESP32MiniKit (ESP32-WROOM-32, 4MB flash)
+ * FQBN:   esp32:esp32:mhetesp32minikit
+ *
 */
 #include <WiFi.h>
 #include <NTPClient.h>
 #include <HTTPClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
+#include <vector>
 
 #include <SPI.h>
 #include <SD.h>
@@ -37,27 +41,26 @@
 //#include "SID.h"
 
 
-const char *ssid     = "xxxx";
-const char *password = "xxxx";
+#include "secrets.h"   // copiare secrets.example.h in secrets.h
 
 //forecast API http://api.openweathermap.org
 
 String URL = "http://api.openweathermap.org/data/2.5/weather?";
-String openweatherApiKey = "xxxx";
 // Replace with your location Credentials
 String lat = "43.06071239857755";
 String lon = "10.614730891178944";
 
 //news API: https://newsapi.org
 
-String newsApiKey = "xxxxx";
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
-File directory;
-File myFile;
-File root;
+String directoryListing;
+uint16_t prgEntry = 0;
+uint8_t sid_conflicts = 0;
+int slideshowIndex = 0;
+std::vector<String> koalaList;
 
 //BluetoothSerial SerialBT;
 
@@ -125,6 +128,7 @@ char SID_filename[128] ; // reserve 128 bytes for file name
 char SID_DIR_name [128] ; // reserve 128 bytes for directory path name
 char SID_path_filename [256] ; // reserve 256 bytes for full path of file
 bool IS_SID_FILE = false; //  for extension check
+bool IS_KOALA_FILE = false;
 
 char  SIDinfo_filetype [8] ;
 char  SIDinfo_name [33] ;
@@ -141,7 +145,6 @@ char  SIDheader [0x7e];
 String hex_value = "";
 
 String response = "";
-char title [2048];
 String currentDir = "";
 String parentDir = "";
 
@@ -177,14 +180,18 @@ String parentDir = "";
 // **        SD connections      **
 // ********************************
 /*
- 
+  Scheda: MH ET LIVE ESP32MiniKit / ESP32-WROOM-32
+  SPI della microSD (VSPI):
   MOSI - pin 23
   MISO - pin 19
-  SCK - pin 18
-  CS - GPIO_NUM_5 
+  SCK  - pin 18
+  CS   - GPIO_NUM_5
 */
 
-#define CS GPIO_NUM_5
+#define CS      GPIO_NUM_5
+#define SD_MOSI GPIO_NUM_23
+#define SD_MISO GPIO_NUM_19
+#define SD_SCK  GPIO_NUM_18
 
 // *************************************************
 // Interrupt routine for IO1
@@ -257,58 +264,178 @@ void triggerNMI() {
 }
 
 
-void writeDirectoryFile (File folder) {
+// normalizza un percorso assoluto
+String normalizePath(String path) {
+  if (path.length() == 0) return "/";
+  if (path[0] != '/') path = "/" + path;
+  while (path.length() > 1 && path.endsWith("/")) {
+    path.remove(path.length() - 1);
+  }
+  return path;
+}
 
-   
-  directory = SD.open("/directory.txt", FILE_WRITE);
+// unisce directory corrente e nome (/nome, nome, /..)
+String makePath(const String &dir, const String &name) {
+  if (name.length() == 0) return normalizePath(dir);
+  if (name[0] == '/') {
+    if (dir.length() == 0 || dir == "/") return normalizePath(name);
+    return normalizePath(dir + name);
+  }
+  if (dir.length() == 0 || dir == "/") return normalizePath("/" + name);
+  return normalizePath(dir + "/" + name);
+}
 
-  if (folder) {
-    directory.println("/..");
-    
+String parentPath(const String &dir) {
+  if (dir.length() <= 1) return "/";
+  int pos = dir.lastIndexOf('/');
+  if (pos <= 0) return "/";
+  return dir.substring(0, pos);
+}
+
+String buildDirectoryListing(File folder) {
+  String listing;
+  if (!folder) {
+    Serial.println("error opening folder");
+    return listing;
+  }
+
+  // Lista costruita in RAM e inviata direttamente al C64: niente file
+  // temporaneo sulla SD, quindi nessuna scrittura/lettura inutile.
+  listing.reserve(1024);
+  listing = "/..\r";
+
   while (true) {
-    File entry =  folder.openNextFile();
-    if (! entry) {
-      // no more files
-      entry.close();
+    File entry = folder.openNextFile();
+    if (!entry) {
       break;
     }
 
-      
-    if (entry.isDirectory()) {
-        directory.print("/");
-        directory.println(entry.name());
-        
-        
-      }
-    else {  
-		directory.println(entry.name());
-    }		
+    const char *entryName = entry.name();
+    if (entryName == nullptr || entryName[0] == 0) {
+      entry.close();
+      continue;
     }
-    
- 
-  directory.close();
-  
+
+    String name(entryName);
+    if (!entry.isDirectory() &&
+        (name.equalsIgnoreCase("directory.txt") || name.equalsIgnoreCase("koalist.txt"))) {
+      entry.close();
+      continue;
+    }
+
+    String line;
+    if (entry.isDirectory()) {
+      line = "/";
+    }
+    line += name;
+    line += '\r';
+    entry.close();
+
+    // Il testo viene copiato in RAM C64 a partire da $1000.
+    // Tengo la lista sotto $4000, per non sovrascrivere i SID rilocati
+    // a $4000-$5FFF (e per non arrivare al codice a $C000).
+    if (listing.length() + line.length() > 12032) {
+      break;
+    }
+    listing += line;
   }
-  else {
-    Serial.println("error opening folder");  
+
+  folder.close();
+  return listing;
 }
 
-myFile = SD.open("/directory.txt");
+void buildDirectoryList() {
+  File dir = SD.open(currentDir);
+  if (!dir) {
+    Serial.print("error opening ");
+    Serial.println(currentDir);
+    directoryListing = "";
+    return;
+  }
 
-  if (myFile) {
+  directoryListing = buildDirectoryListing(dir);
+  dir.close();
 
-    Serial.println("directory:");
-    while (myFile.available()) {
-    Serial.write(myFile.read());
+  Serial.println("directory:");
+  Serial.print(directoryListing);
+}
+
+void enterDirectory(const String &path) {
+  String normalized = normalizePath(path);
+  File dir = SD.open(normalized);
+  if (!dir) {
+    Serial.print("error opening dir ");
+    Serial.println(normalized);
+    return;
+  }
+  dir.close();
+
+  parentDir = currentDir;
+  currentDir = normalized;
+}
+
+void enterParentDirectory() {
+  currentDir = normalizePath(parentDir);
+  parentDir = parentPath(currentDir);
+}
+
+// Cerca un comando SYS nella prima riga BASIC di un PRG caricato a $0801.
+// Ritorna l'indirizzo decimale, oppure 0 se non lo trova.
+uint16_t parseBasicSys(File &f, uint32_t dataLen) {
+  uint8_t buf[160];
+  size_t n = 0;
+
+  f.seek(2);                        // salta load address
+  while (n < sizeof(buf) && n < dataLen && f.available()) {
+    int c = f.read();
+    if (c < 0) break;
+    buf[n++] = (uint8_t)c;
+  }
+  f.seek(2);
+
+  // BASIC: link (2 byte), numero riga (2 byte), poi i token
+  for (size_t i = 4; i < n; i++) {
+    if (buf[i] == 0) break;         // fine della prima riga
+    if (buf[i] == 0x9E) {           // token SYS
+      size_t j = i + 1;
+      while (j < n && buf[j] == ' ') j++;
+      uint16_t addr = 0;
+      bool any = false;
+      while (j < n && buf[j] >= '0' && buf[j] <= '9') {
+        addr = addr * 10 + (buf[j] - '0');
+        any = true;
+        j++;
+      }
+      if (any) return addr;
     }
-    myFile.close();
+  }
+  return 0;
+}
 
-  } else {
-    Serial.println("error opening directory.txt file");
+// invia la lista corrente al C64 (header: lunghezza + destinazione $1000)
+void sendDirectory() {
+  outbuffersize = directoryListing.length();
+  if (outbuffersize > 12032) {
+    outbuffersize = 12032;
+  }
+
+  sendByte((byte)(outbuffersize));
+  sendByte((byte)(outbuffersize >> 8));
+  sendByte(0x00);
+  sendByte(0x10);
+
+  for (unsigned long x = 0; x < outbuffersize; x++) {
+    sendByte(asciiToPET(directoryListing[x]));
   }
 }
 
 void getTime(){
+  currentDate = "";
+  if (WiFi.status() != WL_CONNECTED) {
+    currentDate = "WiFi non connesso\r\n";
+    return;
+  }
+
   timeClient.begin();
   // Set offset time in seconds to adjust for your timezone, for example:
   // GMT +1 = 3600
@@ -340,6 +467,11 @@ void getTime(){
 
 
 void getWeatherData(){
+    weatherString = "";
+    if (WiFi.status() != WL_CONNECTED) {
+      return;
+    }
+
     HTTPClient http;
 
     //Set HTTP Request Final URL with Location and API key information
@@ -438,9 +570,81 @@ byte Ascii_to_screenCode(char ascii) {
                            3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
                            14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
                            25, 26, 27, 93, 35, 64, 32, 32 };
-  byte result = ascii;
-  if (int(ascii) < 129) result = byte(asciitoscreen[int(ascii)]);
-  return result;
+
+  int c = (uint8_t)ascii;
+
+  // Il font 2x2 usa come base solo i codici 0..63.
+  // Le maiuscole vanno portate in minuscolo; i byte UTF-8 (>127) o i
+  // caratteri non supportati diventano spazio, mai indici fuori array.
+  if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+
+  if (c >= 0 && c < 128) {
+    byte v = asciitoscreen[c];
+    if (v < 64) return v;
+  }
+
+  return 32;  // spazio
+}
+
+// ******************************************************************************
+// UTF-8 -> ASCII compatibile con il charset 2x2 dello scroller
+// ******************************************************************************
+String utf8ToScrollerAscii(const String &in) {
+  String out;
+  out.reserve(in.length());
+
+  for (unsigned int i = 0; i < in.length(); ) {
+    uint8_t c = (uint8_t)in[i];
+
+    if (c < 0x80) {
+      if (c >= 32 && c != 127) out += (char)c;
+      else out += ' ';
+      i++;
+      continue;
+    }
+
+    uint32_t cp = 0;
+    int extra = 0;
+
+    if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; extra = 1; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; extra = 2; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; extra = 3; }
+    else { out += ' '; i++; continue; }
+
+    if (i + extra >= in.length()) { out += ' '; break; }
+
+    bool valid = true;
+    for (int k = 1; k <= extra; k++) {
+      uint8_t cc = (uint8_t)in[i + k];
+      if ((cc & 0xC0) != 0x80) { valid = false; break; }
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+
+    if (!valid) { out += ' '; i++; continue; }
+    i += extra + 1;
+
+    char m = '?';
+
+    if ((cp >= 0xC0 && cp <= 0xC5) || (cp >= 0xE0 && cp <= 0xE5)) m = 'a';
+    else if (cp == 0xC7 || cp == 0xE7) m = 'c';
+    else if ((cp >= 0xC8 && cp <= 0xCB) || (cp >= 0xE8 && cp <= 0xEB)) m = 'e';
+    else if ((cp >= 0xCC && cp <= 0xCF) || (cp >= 0xEC && cp <= 0xEF)) m = 'i';
+    else if (cp == 0xD1 || cp == 0xF1) m = 'n';
+    else if ((cp >= 0xD2 && cp <= 0xD6) || (cp >= 0xF2 && cp <= 0xF6)) m = 'o';
+    else if ((cp >= 0xD9 && cp <= 0xDC) || (cp >= 0xF9 && cp <= 0xFC)) m = 'u';
+    else if (cp == 0xDF) m = 's';
+    else if (cp == 0x2018 || cp == 0x2019 || cp == 0x02BC) m = '\'';
+    else if (cp == 0x201C || cp == 0x201D || cp == 0x00AB || cp == 0x00BB) m = '"';
+    else if ((cp >= 0x2010 && cp <= 0x2015) || cp == 0x2212) m = '-';
+    else if (cp == 0x2026) { out += "..."; continue; }
+    else if (cp == 0x00A0 || cp == 0x2009 || cp == 0x200A) m = ' ';
+    else if (cp >= 0x1F000 && cp <= 0x1FAFF) m = ' ';
+
+    out += m;
+  }
+
+  out.toLowerCase();
+  return out;
 }
 
 
@@ -462,16 +666,14 @@ bool Compatibility_check() {
  
 
   LOAD_ADDRESS = 0 ;
-  SID_load_start = (SIDheader[0x08] * 256) + SIDheader[0x09];
 
-  if (SID_load_start == 0) {
-    SID_load_start = SIDheader[0x7c] + SIDheader[0x7d] * 256;
-  }
+  // SID_load_start e SID_data_size sono gia' stati calcolati dal file:
+  // non ricavarli di nuovo dall'header (nel caso load address = 0).
   if ( SID_load_start >= 0x07E8)  {  
     LOAD_ADDRESS = SID_load_start;
   }
 
-  SID_load_end = SID_load_start + SID_data_size - 0x7e ;
+  SID_load_end = SID_load_start + SID_data_size - 1;
   
 
   SID_play =  SIDheader[0x0d] + SIDheader[0x0c] * 256;
@@ -699,8 +901,9 @@ void setup() {
   
   // define inputs
   pinMode(sdata, INPUT);
-  pinMode(C64IO1, INPUT_PULLDOWN);
-  pinMode(C64IO2, INPUT_PULLUP);
+  // GPIO34/35/36 sono input-only: non hanno pull-up/pull-down interni.
+  pinMode(C64IO1, INPUT);
+  pinMode(C64IO2, INPUT);
   pinMode(resetSwitch, INPUT_PULLUP);
 
   // define interrupts
@@ -738,29 +941,45 @@ void setup() {
 
   Serial.begin(115200);
   delay(500);
-  
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    //Serial.print(".");
-  }
 
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  // Il WiFi serve solo per meteo/ora e NEWS. Se non e' configurato o non
+  // e' disponibile, NON bloccare l'avvio: SD e menu devono funzionare lo stesso.
+  if (strlen(ssid) > 0 && strcmp(ssid, "xxxx") != 0) {
+    Serial.print("Connecting to ");
+    Serial.println(ssid);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart) < 15000) {
+      delay(500);
+      Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("WiFi: connessione fallita, continuo senza rete");
+    }
+  } else {
+    Serial.println("WiFi non configurato (ssid/password): continuo senza rete");
+  }
   //if (SerialBT.begin("ESP32Cart"))digitalWrite(CLED, HIGH);         // start serial bluetooth
 
-  if (!SD.begin(CS)) {
+  // Pin SPI espliciti: corrispondono alla scheda MH ET LIVE ESP32MiniKit
+  // e allo schema elettrico della cartuccia (VSPI).
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, CS);
+  if (!SD.begin(CS, SPI, 4000000)) {
 
     Serial.println("SD begin failed!");
     
   }
 
+  SD.remove("/directory.txt");          // pulizia del vecchio file temporaneo
   currentDir = parentDir = "/";
-  root = SD.open(currentDir);
-  writeDirectoryFile (root);
-  root.close();
+  buildDirectoryList();
   delay(500);
   digitalWrite(CLED, LOW);
   Serial.println("");
@@ -768,6 +987,67 @@ void setup() {
 
 }  // end of setup
 
+
+// Invia un blocco di testo allo scroller NEWS ($3000) e termina con $FF.
+void sendScrollerMessage(const String &text) {
+  outbuffersize = text.length();
+  sendByte((byte)(outbuffersize));
+  sendByte((byte)(outbuffersize >> 8));
+  sendByte(0x00);
+  sendByte(0x88);          // testo news a $8800 (dopo il bitmap e i dati Koala)
+  for (unsigned long x = 0; x < outbuffersize; x++) {
+    sendByte(Ascii_to_screenCode(text[x]));
+  }
+  sendByte(0xff);
+}
+
+void buildKoalaList() {
+  koalaList.clear();
+
+  File dir = SD.open(currentDir);
+  if (dir) {
+    while (true) {
+      File entry = dir.openNextFile();
+      if (!entry) break;
+      if (!entry.isDirectory()) {
+        String n = entry.name();
+        if (isKoalaName(n)) {
+          koalaList.push_back(n);
+        }
+      }
+      entry.close();
+    }
+    dir.close();
+  }
+
+  // Cache testuale nella directory corrente. Il C64 non la mostra.
+  String cachePath = makePath(currentDir, "koalist.txt");
+  File cache = SD.open(cachePath, FILE_WRITE);
+  if (cache) {
+    for (size_t i = 0; i < koalaList.size(); i++) {
+      cache.println(koalaList[i]);
+    }
+    cache.close();
+  }
+
+  Serial.printf("Koala list: %u file, cache %s\n",
+                (unsigned)koalaList.size(), cachePath.c_str());
+}
+
+bool isKoalaName(const String &name) {
+  int len = name.length();
+  if (len < 4) return false;
+  String suffix = name.substring(len - 4);
+  suffix.toLowerCase();
+  return suffix == ".kla" || suffix == ".koa";
+}
+
+void sendZeroBlock() {
+  sendByte(0);
+  sendByte(0);
+  sendByte(0);
+  sendByte(0);
+}
 
 // ******************************************************************************
 // Main loop
@@ -790,23 +1070,9 @@ void loop() {
     switch (ch) { 
       //========================================================
       case 49:{           // 49 = read directory from SD
-
-             File dataFile = SD.open("/directory.txt");
-        
-      if (dataFile) {
-      outbuffersize = dataFile.size();
-      sendByte((byte)(outbuffersize));
-      sendByte((byte)(outbuffersize>>8)); 
-      sendByte(0x00);
-      sendByte(0x10);
- 
-     for (int x = 0; x < outbuffersize; x++) {
-          sendByte(asciiToPET(dataFile.read()));}
-    dataFile.close();}
-    
-     else {
-     Serial.println("error opening directory.txt");}
-     break;}
+        buildDirectoryList();
+        sendDirectory();
+        break;}
      
    //========================================================         
       case 50:{         // 50 = load supermon+
@@ -840,20 +1106,31 @@ void loop() {
   inbuffer[i] = 0;  // close the buffer
   inbuffersize = i;
 
-  if (strcmp(&inbuffer[strlen(inbuffer) - 4], ".SID") == 0) {
-    IS_SID_FILE = true;
+  IS_SID_FILE = false;
+  IS_KOALA_FILE = false;
+  int len = strlen(inbuffer);
+  if (len >= 4 && inbuffer[0] != '/') {
+    String suffix = String(inbuffer + (len - 4));
+    suffix.toLowerCase();
+    IS_SID_FILE = (suffix == ".sid");
+    IS_KOALA_FILE = (suffix == ".kla" || suffix == ".koa");
   }
-   if (strcmp(&inbuffer[strlen(inbuffer) - 4], ".sid") == 0) {
-    IS_SID_FILE = true;
-  }
-  else IS_SID_FILE = false;
   if (IS_SID_FILE) Serial.println("SID file ok");
-   else Serial.println("Not SID file");
+  else if (IS_KOALA_FILE) Serial.println("Koala file ok");
+  else Serial.println("Not SID/Koala file");
   // char bns[inbuffersize];
   // strncpy ( bns, inbuffer, inbuffersize + 1);
   String text_lowcase = inbuffer;
   //text_lowcase.toLowerCase();
   Serial.println(text_lowcase);
+
+  // Selezione di una voce di directory: cambia la directory corrente.
+  // Il C64 chiedera' subito dopo il comando 49 per ricevere la nuova lista.
+  if (strcmp(inbuffer, "/..") == 0) {
+    enterParentDirectory();
+  } else if (inbuffer[0] == '/') {
+    enterDirectory(makePath(currentDir, inbuffer));
+  }
   
      break;}
      
@@ -879,39 +1156,42 @@ void loop() {
      break;}
 
     //========================================================
+      case 62:{          // 62 = reset slideshow Koala
+        buildKoalaList();
+        slideshowIndex = 0;
+        sendZeroBlock();
+        break;}
+
+    //========================================================
+      case 61:{          // 61 = prossimo Koala della directory corrente
+        if (slideshowIndex < 0 || slideshowIndex >= (int)koalaList.size()) {
+          sendZeroBlock();
+          slideshowIndex = 0;
+          break;
+        }
+
+        String targetName = koalaList[slideshowIndex];
+        strncpy(inbuffer, targetName.c_str(), sizeof(inbuffer) - 1);
+        inbuffer[sizeof(inbuffer) - 1] = 0;
+        IS_SID_FILE = false;
+        IS_KOALA_FILE = true;
+        slideshowIndex++;
+        // fall through: il case 53 invia il file Koala con l'header corretto
+      }
+
+    //========================================================
       case 53:{          // 53 = file from ESP32 to c64
       
-      String fileName = currentDir;
-      bool result = strcmp(inbuffer,"/..");
-      
-    if (result == 0){
-      currentDir = parentDir; 
-      File dir;
-       
-     dir = SD.open(currentDir);
-         writeDirectoryFile (dir);
-
-         
-         dir.close(); 
-    }
-
-    
-	  else if (inbuffer[0] == '/'){
-
-     currentDir = inbuffer;
-     
-		 File dir;
-       
-		 dir = SD.open(currentDir);
-         writeDirectoryFile (dir);
-
-         
-         dir.close(); 
-	  }
-	  
-	  else {
-        fileName += "/";
-        fileName += inbuffer;
+      if (strcmp(inbuffer, "/..") == 0) {
+        enterParentDirectory();
+        buildDirectoryList();
+        sendDirectory();
+      } else if (inbuffer[0] == '/') {
+        enterDirectory(makePath(currentDir, inbuffer));
+        buildDirectoryList();
+        sendDirectory();
+      } else {
+        String fileName = makePath(currentDir, inbuffer);
 		  
         File dataFile = SD.open(fileName);
   
@@ -920,41 +1200,156 @@ void loop() {
   if (dataFile) {
     
   
-    if (IS_SID_FILE == false){
-    outbuffersize = dataFile.size();
-    sendByte((byte)(outbuffersize));
-    sendByte((byte)(outbuffersize>>8)); 
-    
-    for (int x = 0; x < outbuffersize; x++) {
-          sendByte(dataFile.read());}
-    dataFile.close();
-    Serial.print("Load: ");
-    Serial.println(inbuffer);}
+    if (IS_KOALA_FILE) {
+      // Koala: 8000 bitmap + 1000 video + 1000 color + 1 background.
+      // Alcuni file hanno 2 byte di load address $00 $60 davanti ai 10001
+      // byte Koala: in quel caso vanno saltati e la destinazione e' sempre $6000.
+      uint32_t fileSize = dataFile.size();
+
+      Serial.printf("Koala: file %lu byte, primi byte:", (unsigned long)fileSize);
+      for (int i = 0; i < 8 && dataFile.available(); i++) {
+        int b = dataFile.read();
+        Serial.printf(" %02X", b);
+      }
+      Serial.println();
+      dataFile.seek(0);
+
+      // Un file Koala standard e' 10001 byte. Se ce ne sono alcuni in piu'
+      // all'inizio sono un header (tipicamente 2 byte di load address $00 $60).
+      // Va saltato: la destinazione e' comunque sempre $6000.
+      uint32_t headerLen = 0;
+      if (fileSize > 10001 && fileSize <= 10009) {
+        headerLen = fileSize - 10001;
+      }
+
+      for (uint32_t i = 0; i < headerLen; i++) {
+        int b = dataFile.read();
+        Serial.printf("Koala header byte %lu: %02X\n", (unsigned long)i, b);
+      }
+
+      uint32_t dataLen = fileSize - headerLen;
+
+      sendByte((byte)(dataLen));
+      sendByte((byte)(dataLen >> 8));
+      sendByte(0x00);                    // destinazione $6000
+      sendByte(0x60);
+
+      for (uint32_t x = 0; x < dataLen; x++) {
+        sendByte(dataFile.read());
+      }
+
+      dataFile.close();
+      Serial.printf("Koala: %lu byte dati, header %lu byte\n",
+                    (unsigned long)dataLen,
+                    (unsigned long)headerLen);
+    }
+    else if (IS_SID_FILE == false){
+      uint32_t fileSize = dataFile.size();
+
+      if (fileSize < 3) {
+        Serial.println("PRG troppo corto");
+        prgEntry = 0;
+        dataFile.close();
+      } else {
+        int lo = dataFile.read();
+        int hi = dataFile.read();
+        uint16_t loadAddr = (uint16_t)lo | ((uint16_t)hi << 8);
+        uint32_t dataLen = fileSize - 2;
+
+        prgEntry = loadAddr;
+        if (loadAddr == 0x0801) {
+          uint16_t sys = parseBasicSys(dataFile, dataLen);
+          prgEntry = (sys != 0) ? sys : 0xE37B;  // fallback: BASIC warm start
+        }
+
+        sendByte((byte)(dataLen));
+        sendByte((byte)(dataLen >> 8));
+        sendByte((byte)loadAddr);
+        sendByte((byte)(loadAddr >> 8));
+
+        dataFile.seek(2);
+        for (uint32_t x = 0; x < dataLen; x++) {
+          sendByte(dataFile.read());
+        }
+        dataFile.close();
+
+        Serial.printf("PRG: load $%04X, entry $%04X, %lu byte\n",
+                      loadAddr, prgEntry, (unsigned long)dataLen);
+      }
+    }
 
     else{
-    for (int i = 0; i < 0x7c; i++) {
+    uint32_t sidFileSize = dataFile.size();
+
+    for (int i = 0; i < 0x7c && dataFile.available(); i++) {
               SIDheader[i] = dataFile.read();
           }
 
-    SID_data_size = dataFile.size() - 0x7c;
+    // Il data offset e' nei byte 6-7 (big endian). Per PSID v2 e' 0x7c,
+    // per PSID v3 puo' essere 0x7e.
+    uint16_t dataOffset = ((uint16_t)SIDheader[6] << 8) | SIDheader[7];
+    if (dataOffset < 0x76 || dataOffset > sidFileSize) {
+      dataOffset = 0x7c;
+    }
+
+    uint16_t loadStart = ((uint16_t)SIDheader[8] << 8) | SIDheader[9];
+    uint32_t dataStart = dataOffset;
+
+    // Se il campo load address e' 0, i primi 2 byte dei dati sono
+    // il vero load address (little endian) e vanno esclusi dal payload.
+    if (loadStart == 0) {
+      dataFile.seek(dataOffset);
+      int lo = dataFile.read();
+      int hi = dataFile.read();
+      loadStart = (uint16_t)lo | ((uint16_t)hi << 8);
+      dataStart = dataOffset + 2;
+    }
+
+    if (dataStart > sidFileSize) {
+      Serial.println("SID: offset dati non valido");
+      dataFile.close();
+      break;
+    }
+
+    SID_load_start = loadStart;
+    SID_data_size = sidFileSize - dataStart;
     outbuffersize = SID_data_size;
 
-    
+    Serial.printf("SID header: offset=%u load=$%04X dataStart=%lu size=%lu\n",
+                  dataOffset, SID_load_start,
+                  (unsigned long)dataStart, (unsigned long)SID_data_size);
+
     outbuffer = (char*)malloc(outbuffersize);
     
     if (outbuffer == NULL) {
       Serial.println("errore memoria!");
+      dataFile.close();
+      break;
     }
 
-    for (int i = 0; i < outbuffersize; i++) {
+    dataFile.seek(dataStart);
+    for (unsigned long i = 0; i < outbuffersize; i++) {
               outbuffer[i] = dataFile.read();
           }
 
  
             PLAYABLE_SID = Compatibility_check();
             infoSID();
-            
-          sendByte((byte)(5));
+
+          // Calcola quali aree del layout NEWS/Koala sarebbero sovrascritte
+          // dal SID. Il C64 usera' questa maschera per evitare crash/corruzione.
+          uint32_t sidEnd = (uint32_t)SID_load_start + SID_data_size - 1;
+          sid_conflicts = 0;
+          if (SID_load_start <= 0x07E7 && sidEnd >= 0x0400) sid_conflicts |= 0x01; // screen
+          if (SID_load_start <= 0x0FFF && sidEnd >= 0x0800) sid_conflicts |= 0x02; // charset
+          if (SID_load_start <= 0x3F3F && sidEnd >= 0x2000) sid_conflicts |= 0x04; // bitmap
+          if (SID_load_start <= 0x8710 && sidEnd >= 0x6000) sid_conflicts |= 0x08; // sorgente Koala
+          if (SID_load_start <= 0x8FD0 && sidEnd >= 0x8800) sid_conflicts |= 0x10; // testo NEWS
+          if (SID_load_start <= 0xCFFF && sidEnd >= 0xC000) sid_conflicts |= 0x20; // codice
+          Serial.printf("SID range: $%04X-$%04X, conflict mask: %02X\n",
+                        SID_load_start, (unsigned)(sidEnd & 0xFFFF), sid_conflicts);
+
+          sendByte((byte)(6));
           sendByte((byte)(0)); 
           sendByte(0x3c);    //cassette_buffer    
           sendByte(0x03);
@@ -964,6 +1359,7 @@ void loop() {
           sendByte((byte)(SID_init>>8));
           sendByte((byte)(SID_play));
           sendByte((byte)(SID_play>>8));
+          sendByte((byte)(sid_conflicts));
 
           
           
@@ -985,11 +1381,14 @@ void loop() {
    
     
     sendByte((byte)(SID_data_size));
-    sendByte((byte)(SID_data_size>>8)); 
+    sendByte((byte)(SID_data_size>>8));
+    sendByte((byte)(SID_load_start));
+    sendByte((byte)(SID_load_start>>8));
 
-    
-    for (int x = 0; x < SID_data_size; x++) {
+    for (unsigned long x = 0; x < SID_data_size; x++) {
           sendByte(outbuffer[x]);}
+
+    Serial.printf("SID: load $%04X, %lu byte\n", SID_load_start, (unsigned long)SID_data_size);
           
     free(outbuffer);
    
@@ -1020,60 +1419,88 @@ void loop() {
           sendByte((byte)(outbuffersize));
           sendByte((byte)(outbuffersize>>8));
           sendByte(0x00);
-          sendByte(0x38);
+          sendByte(0x08);          // charset a $0800 (libero, fuori dal bitmap)
           for (int x = 0; x < outbuffersize; x++) {
           sendByte(chars[x]);}
           
       break;}
 
       //======================================================== 
-      case 58:{       // 57 = get NEWS
-        
+      case 58:{       // 58 = get NEWS
+      Serial.println("NEWS: richiesta ricevuta");
+
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("NEWS: WiFi non connesso");
+        sendScrollerMessage("wifi non connesso");
+        break;
+      }
+
       HTTPClient http;
-      http.begin("https://newsapi.org/v2/top-headlines?country=it&apiKey=" + newsApiKey);
+      http.setTimeout(15000);
+      http.begin("https://newsapi.org/v2/everything?q=italia&language=it&sortBy=publishedAt&pageSize=10&apiKey=" + newsApiKey);
       int httpCode = http.GET();
+      Serial.printf("NEWS: HTTP %d\n", httpCode);
+
+      if (httpCode <= 0) {
+        Serial.printf("NEWS: errore HTTP %d\n", httpCode);
+        http.end();
+        sendScrollerMessage("errore connessione news");
+        break;
+      }
+
       response = http.getString();
+      Serial.printf("NEWS: risposta %u byte\n", (unsigned)response.length());
 
-      // Parse the response to get the headlines
-     DynamicJsonDocument doc(19508);
-     //DeserializationError error = deserializeJson(doc, payload);
-     DeserializationError error = deserializeJson(doc, response);
-     if (error) {
-     Serial.println("Error parsing news data");
-     return;
-     }
+      DynamicJsonDocument doc(32768);
+      DeserializationError error = deserializeJson(doc, response);
+      if (error) {
+        Serial.printf("NEWS: JSON error %s\n", error.c_str());
+        http.end();
+        sendScrollerMessage("errore dati news");
+        break;
+      }
 
-     // Extract the "title" field from the first article
-    JsonArray articles = doc["articles"];
+      JsonArray articles = doc["articles"];
+      Serial.printf("NEWS: articoli %u\n", (unsigned)articles.size());
 
-    //String title = articles[0]["title"];
-    // Display the title of each article
+      if (articles.size() == 0) {
+        Serial.print("NEWS: nessun articolo, risposta: ");
+        Serial.println(response.substring(0, 200));
+        http.end();
+        sendScrollerMessage("nessuna notizia disponibile");
+        break;
+      }
 
-    strcpy(title, "");
-    for (int i = 0; i < articles.size(); i++) {
-  
-    strcat(title, articles[i]["title"]);
-    strcat(title, " ");
- 
+      String headlines;
+      headlines.reserve(2048);
+      for (size_t i = 0; i < articles.size(); i++) {
+        const char *t = articles[i]["title"] | "";
+        if (headlines.length() > 0) headlines += ' ';
+        headlines += t;
+        if (headlines.length() >= 2000) break;
+      }
+
+      String newsText = utf8ToScrollerAscii(headlines);
+      if (newsText.length() > 2000) newsText.remove(2000);
+      if (newsText.length() == 0) newsText = "nessuna notizia disponibile";
+
+      Serial.print("NEWS: testo: ");
+      Serial.println(newsText);
+      sendScrollerMessage(newsText);
+
+      http.end();
+      break;
    }
 
-   Serial.println(title);
- 
-   String text_lowcase = title;
-   text_lowcase.toLowerCase();
-   outbuffersize = text_lowcase.length();
-  
-    sendByte((byte)(outbuffersize));
-    sendByte((byte)(outbuffersize>>8));
-    sendByte(0x00);
-    sendByte(0x30); 
-    
-    for (int x = 0; x < outbuffersize; x++) {
-          sendByte(Ascii_to_screenCode(text_lowcase[x]));}
-    sendByte(0xff);
-
-    http.end();
-   }
+      //========================================================
+      case 60:{         // 60 = indirizzo di ingresso del PRG appena caricato
+        sendByte(2);
+        sendByte(0);
+        sendByte(0x39);
+        sendByte(0x03);
+        sendByte((byte)(prgEntry));
+        sendByte((byte)(prgEntry >> 8));
+        break;}
 
     //========================================================
     //========================================================

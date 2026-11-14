@@ -30,3 +30,14 @@ Matteo
 
 ![sideBottom](https://github.com/matt199394/c64esp32cart/assets/65487240/b464b87a-7bbd-49e4-91c8-636ed578510b)
 
+## Credenziali WiFi e API
+
+Il file `c64esp32Cart/secrets.h` non viene versionato.
+
+Per compilare:
+
+```bash
+cp c64esp32Cart/secrets.example.h c64esp32Cart/secrets.h
+```
+
+Poi inserire in `secrets.h` SSID, password WiFi, chiave OpenWeather e chiave NewsAPI.

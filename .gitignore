@@ -3,3 +3,13 @@ c64esp32Cart/secrets.h
 
 # dump completo della flash: contiene NVS, WiFi e calibrazione
 firmware_backup/
+
+# output di build locali nella root
+/c64esp8kROM.bin
+/c64esp32menu.prg
+/c64esp32menu_c000.prg
+/c64esp32menu_c000_cart.prg
+
+# asset di test locali
+/moon.kla
+/moon_reference.png

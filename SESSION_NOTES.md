@@ -389,3 +389,181 @@ Non aggiungere `c64esp32Cart/secrets.h` né `firmware_backup/`.
    - eliminare la pausa musicale durante il caricamento NMI
    - cache/filename list già presente
 4. PR finale `pi-work → main`
+
+---
+
+## 10. Fonti NEWS selezionabili
+
+Il comando NEWS non usa più una sola fonte fissa. Premendo `7` compare un
+sottomenu con:
+
+1. ANSA (ultima ora)
+2. Rai News
+3. Repubblica
+4. Il Sole 24 Ore
+5. Google News Italia
+6. NewsAPI
+
+Il C64 invia il comando `70+indice` all'ESP32. Per i feed RSS l'ESP32 legge la
+risposta in streaming con `HTTPClient::writeToStream()`, che decodifica anche
+il `Transfer-Encoding: chunked`; un piccolo parser estrae i `<title>` dentro
+gli `<item>` (inclusi i titoli in CDATA) senza tenere in RAM l'intero XML.
+NewsAPI resta disponibile come sesta voce e usa il percorso JSON già esistente.
+
+Il testo viene comunque limitato a 2000 caratteri e convertito con
+`utf8ToScrollerAscii()` prima di essere inviato a `$8800`.
+
+Per aggiungere o cambiare una fonte basta modificare `NEWS_SOURCES[]` in
+`c64esp32Cart/c64esp32Cart.ino` e la relativa voce in `news_menu` nel sorgente
+C64.
+
+### Nota pratica: prove da SD2IEC senza EPROM
+
+Con la SD2IEC si può evitare la programmazione della 27C512 caricando il
+menu come PRG. Due varianti:
+
+```basic
+REM PRG a $C000 (richiede ,8,1)
+LOAD"espnews.prg",8,1
+SYS 49152
+```
+
+```basic
+REM PRG auto-avviante a $0801
+LOAD"espnewsauto.prg",8
+RUN
+```
+
+La seconda si compila con:
+
+```bash
+acme -DCART=1 -DPRGAUTO=1 c64esp32cart.asm
+```
+
+`espnewsauto.prg` contiene lo stub BASIC a `$0801`, copia il payload a `$C000`
+e salta al menu. La partenza è stata verificata in VICE. Attenzione: il vecchio
+`esp32.prg` presente sulla SD non contiene il sottomenu delle fonti NEWS.
+
+---
+
+## 11. Grafica PETSCII durante le NEWS
+
+Quando non c'è un'immagine Koala caricata, l'ESP32 genera una schermata
+PETSCII casuale (23 righe x 40 colonne) e la invia al C64 prima che parta lo
+scroller. La zona alta usa il charset ROM del C64 a `$1000`; le due righe
+dello scroller continuano a usare il font 2x2 a `$0800`.
+
+- comandi C64: `70..75` = NEWS senza grafica, `80..85` = NEWS + grafica
+- l'art viene inviata a `$0400` (screen) e `$D800` (colori)
+- il testo NEWS resta a `$8800`
+- l'art non viene usata se `koala_ok` è attivo, per non sovrascrivere la
+  screen matrix del Koala
+- dopo `wait_rx_long` il C64 chiama `wait_quiet`, che aspetta 10 jiffy di
+  linea inattiva: così tutti i blocchi (testo + grafica) sono completi prima
+  di far partire lo scroller, evitando che l'NMI sovrascriva `ptr1/ptr2`
+- il raster split è stato adattato: top con `d018=$14`, righe 23-24 con
+  `d018=$12`
+
+La resa è stata verificata in VICE iniettando l'art generata e avviando lo
+scroller.
+
+### Aggiornamento grafica NEWS
+
+- Sotto `C64 NEWS` viene mostrato il nome della fonte corrente
+  (`NEWS_SOURCES[newsSourceIndex].name`).
+- Ogni richiesta NEWS sceglie casualmente uno di 4 pattern PETSCII:
+  city/skyline (quello originale), cielo stellato, muro di mattoni, labirinto.
+  Il pattern non si ripete immediatamente.
+- Durante lo scroller il C64, ogni ~3000 frame (circa 60 s PAL), invia il
+  comando `86` all'ESP32. L'ESP32 genera un nuovo pattern e lo invia in un
+  blocco unico da 1840 byte a `$9000`/$9398; il C64 lo copia in
+  `$0400`/`$D800` con `copy_art`.
+- Il testo+grafica iniziali viaggiano in un unico blocco da 3888 byte a
+  `$8800`: 2048 byte di testo (padding compreso), poi 920+920 byte di grafica.
+  In questo modo il C64 aspetta una sola ricezione prima di avviare lo
+  scroller.
+- Durante l'aggiornamento lo scroller resta fermo e il SID viene messo in
+  pausa; `ptr1` viene salvato/ripristinato perché l'NMI lo usa per la
+  destinazione.
+- La zona di staging NEWS è quindi `$8800-$972F`; il controllo di conflitto
+  SID è stato esteso a questo intervallo.
+
+---
+
+## 12. Fonti internazionali e slideshow SEQ
+
+### Fonti NEWS
+
+Aggiunte 4 fonti in inglese (totale 10, tasti `1-9,0`):
+
+- BBC World
+- Al Jazeera
+- SCMP (South China Morning Post)
+- CGTN World
+
+I feed CNN RSS non sono più raggiungibili; al loro posto sono state usate
+SCMP/CGTN per la Cina e BBC/Al Jazeera per l'estero.
+
+Comandi C64 aggiornati:
+
+- `70..79` = NEWS senza grafica (Koala attivo)
+- `90..99` = NEWS + grafica PETSCII generata
+- `86` = richiesta nuovo art durante lo scroller
+
+### Slideshow PETSCII da .d64
+
+L'ESP32 legge i file `.d64` dalla propria SD, cerca i file SEQ nel directory
+CBM DOS e ne estrae il contenuto. Il C64 riceve lo stream SEQ a `$A000` e lo
+mostra con la routine `show_seq`, che usa il KERNAL `CHROUT` (quindi interpreta
+i codici PETSCII: clear, colori, cursor, ecc.).
+
+- cartella SD: `/petscii-art` (fallback: radice della SD)
+- solo file SEQ; quelli oltre 8000 byte (animazioni lunghe) vengono saltati
+- il C64 legge `$A000` con BASIC bancata fuori (`$01=$36`), poi ripristina
+- il primo art viene richiesto subito prima di avviare lo scroller
+- ogni 750 frame (~15 s PAL) arriva una nuova immagine SEQ; se non ci sono
+  immagini valide, l'ESP32 invia un pattern generato e il timer torna a
+  3000 frame (~60 s)
+- durante il caricamento lo scroller resta fermo e il SID è in pausa
+- le due righe inferiori vengono ripulite per lasciare spazio allo scroller
+
+Layout NEWS aggiornato:
+
+- testo + art generata: `$8800-$97CF`
+- stream SEQ: `$A000-$BFFF`
+- codice: `$C000-$CFEF`
+
+---
+
+## 13. Slideshow SEQ standalone
+
+Nuova voce di menu: `9.SEQ`.
+
+- Avanzamento automatico ogni ~5 s (250 jiffy PAL).
+- `F7` = immagine successiva, `F1` = precedente, `SPACE` = torna al menu.
+- Le immagini vengono lette da `/petscii-seq` sulla SD dell'ESP32.
+- Comandi C64 -> ESP32: `89` prima immagine, `87` successiva, `88` precedente.
+- L'ESP32 ordina i file `.seq` per nome e salta quelli oltre 8000 byte.
+- Se non ci sono `.seq`, l'ESP32 invia un pattern generato a `$9000`.
+
+Estrazione dei SEQ dai `.d64`:
+
+```bash
+python3 tools/extract_seq.py /home/matteo/c64/petscii-art ./petscii-seq
+```
+
+Lo script genera `0001.seq`, `0002.seq`, ... e `manifest.txt`. In alternativa
+si possono estrarre con `c1541`, ma lo script gestisce anche i nomi con spazi
+iniziali e le catene settori corrotte.
+
+La SD dell'ESP32 è stata preparata con:
+
+```text
+/petscii-art   (file .d64 originali, usati dalle NEWS)
+/petscii-seq   (681 file .seq, usati dal menu 9)
+espnews.prg
+espnewsauto.prg
+```
+
+Attenzione: il codice C64 arriva a `$CFF9`, quindi restano solo 7 byte liberi
+nella pagina `$C000-$CFFF`.

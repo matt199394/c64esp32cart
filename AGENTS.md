@@ -52,6 +52,22 @@ SYS 49152
 
 Il flag `-DC400` è storico: il codice ora parte da `$C000`.
 
+### C64 PRG auto-avviante da $0801 (comodo con SD2IEC)
+
+```bash
+acme -DCART=1 -DPRGAUTO=1 c64esp32cart.asm
+# -> espnewsauto.prg
+```
+
+Caricamento:
+
+```basic
+LOAD"espnewsauto.prg",8
+RUN
+```
+
+Copia il payload a `$C000` e avvia il menu; non serve `,8,1` né `SYS`.
+
 ### Test comunicazione
 
 ```bash
@@ -99,6 +115,7 @@ git push origin pi-work
   - bitmap `$2000-$3F3F`
   - sorgente Koala `$6000-$8710`
   - testo NEWS `$8800-$8FD0`
+  - staging NEWS + art/SEQ `$8800-$BFFF`
   - codice `$C000-$CE81`
 - I file interni `directory.txt` e `koalist.txt` sono filtrati dalla lista
 
@@ -111,6 +128,18 @@ git push origin pi-work
 - slideshow Koala (`8.Koala slideshow`) con cache `koalist.txt`
 - SID di sottofondo nello slideshow, in pausa durante l'NMI
 - NEWS con Koala di sfondo e testo scorrevole
+- grafica PETSCII casuale nello schermo NEWS quando non c'è un Koala caricato
+  (charset ROM in alto, font 2x2 solo nelle righe dello scroller)
+- nome della fonte sotto il titolo e 4 pattern (city, stelle, mattoni, labirinto)
+  rigenerati ogni ~60 s durante lo scroller
+- NEWS da più fonti selezionabili (ANSA, Rai News, Repubblica, Il Sole 24 Ore,
+  Google News, NewsAPI, BBC World, Al Jazeera, SCMP, CGTN World) tramite
+  feed RSS/JSON
+- slideshow di immagini PETSCII SEQ lette da file `.d64` nella SD dell'ESP32
+  (cartella `/petscii-art`) durante lo scroller delle NEWS
+- slideshow SEQ standalone (`9.SEQ`) da `/petscii-seq`, con auto-avanzamento,
+  F7 avanti, F1 indietro, SPACE per uscire
+- script `tools/extract_seq.py` per estrarre i SEQ dai `.d64`
 - caricamento SID e PRG con protocollo corretto
 - Televideo via PNG RAI convertito in `.koa` con `tools/televideo_fetch.sh`
 - script `tools/` per sidreloc e scansione SID safe

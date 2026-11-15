@@ -13,3 +13,7 @@ firmware_backup/
 # asset di test locali
 /moon.kla
 /moon_reference.png
+
+# ulteriori output di build locali
+/espnewsauto.prg
+/esp3e

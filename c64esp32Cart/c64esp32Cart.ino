@@ -31,7 +31,9 @@
 #include <HTTPClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
+#include <esp_system.h>
 #include <vector>
+#include <algorithm>
 
 #include <SPI.h>
 #include <SD.h>
@@ -651,6 +653,719 @@ String utf8ToScrollerAscii(const String &in) {
 // ******************************************************************************
 // translate ascii to PETascii
 // ******************************************************************************
+// ******************************************************************************
+// NEWS: fonti selezionabili dal menu C64
+// ******************************************************************************
+struct NewsSource {
+  const char *name;
+  const char *url;
+  bool useNewsApi;
+};
+
+static const NewsSource NEWS_SOURCES[] = {
+  { "ANSA",        "https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", false },
+  { "Rai News",    "https://www.rainews.it/rss/tutti",                        false },
+  { "Repubblica",  "https://www.repubblica.it/rss/homepage/rss2.0.xml",       false },
+  { "Il Sole 24 Ore", "https://www.ilsole24ore.com/rss/italia.xml",           false },
+  { "Google News", "https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it",      false },
+  { "NewsAPI",     "",                                                        true  },
+  { "BBC World",   "https://feeds.bbci.co.uk/news/world/rss.xml",            false },
+  { "Al Jazeera",  "https://www.aljazeera.com/xml/rss/all.xml",              false },
+  { "SCMP",        "https://www.scmp.com/rss/91/feed",                       false },
+  { "CGTN World",  "https://www.cgtn.com/subscribe/rss/section/world.xml",   false },
+};
+
+const int NEWS_SOURCE_COUNT = sizeof(NEWS_SOURCES) / sizeof(NEWS_SOURCES[0]);
+int newsSourceIndex = 0;
+
+static void appendUtf8CodePoint(String &out, uint32_t cp) {
+  if (cp < 0x80) {
+    out += (char)cp;
+  } else if (cp < 0x800) {
+    out += (char)(0xC0 | (cp >> 6));
+    out += (char)(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    out += (char)(0xE0 | (cp >> 12));
+    out += (char)(0x80 | ((cp >> 6) & 0x3F));
+    out += (char)(0x80 | (cp & 0x3F));
+  } else {
+    out += (char)(0xF0 | (cp >> 18));
+    out += (char)(0x80 | ((cp >> 12) & 0x3F));
+    out += (char)(0x80 | ((cp >> 6) & 0x3F));
+    out += (char)(0x80 | (cp & 0x3F));
+  }
+}
+
+// Converte le entita' HTML/XML piu' comuni (&amp; &#x27; ecc.) in UTF-8.
+static String decodeHtmlEntities(const char *s, unsigned int len) {
+  String out;
+  out.reserve(len);
+
+  for (unsigned int i = 0; i < len; i++) {
+    if (s[i] != '&') {
+      out += s[i];
+      continue;
+    }
+
+    unsigned int j = i + 1;
+    while (j < len && j <= i + 10 && s[j] != ';') j++;
+    if (j >= len || s[j] != ';') {
+      out += '&';
+      continue;
+    }
+
+    String ent(s + i + 1, j - i - 1);
+    bool recognized = true;
+
+    if (ent == "amp") out += '&';
+    else if (ent == "lt") out += '<';
+    else if (ent == "gt") out += '>';
+    else if (ent == "quot") out += '"';
+    else if (ent == "apos") out += '\'';
+    else if (ent == "nbsp") out += ' ';
+    else if (ent.length() > 1 && ent[0] == '#') {
+      uint32_t cp = 0;
+      bool ok = true;
+
+      if (ent[1] == 'x' || ent[1] == 'X') {
+        if (ent.length() == 2) ok = false;
+        for (unsigned int k = 2; ok && k < ent.length(); k++) {
+          char h = ent[k];
+          if (h >= '0' && h <= '9') cp = cp * 16 + (h - '0');
+          else if (h >= 'a' && h <= 'f') cp = cp * 16 + (h - 'a' + 10);
+          else if (h >= 'A' && h <= 'F') cp = cp * 16 + (h - 'A' + 10);
+          else ok = false;
+        }
+      } else {
+        for (unsigned int k = 1; ok && k < ent.length(); k++) {
+          char d = ent[k];
+          if (d >= '0' && d <= '9') cp = cp * 10 + (d - '0');
+          else ok = false;
+        }
+      }
+
+      if (ok && cp > 0 && cp <= 0x10FFFF) appendUtf8CodePoint(out, cp);
+      else recognized = false;
+    } else {
+      recognized = false;
+    }
+
+    if (recognized) i = j;
+    else out += '&';   // entita' sconosciuta: lascia il testo com'e'
+  }
+
+  return out;
+}
+
+// Legge il feed RSS e raccoglie i <title> dentro gli <item>.
+// Il sink viene alimentato da HTTPClient::writeToStream(), che decodifica
+// anche il Transfer-Encoding chunked (ANSA, Rai, Google lo usano).
+// Non tiene in RAM l'intero XML (Google News puo' superare i 100 KB).
+class RssTitleSink : public Stream {
+public:
+  RssTitleSink(String &out, unsigned int maxLen, int maxTitles)
+    : out(out), maxLen(maxLen), maxTitles(maxTitles) {}
+
+  size_t write(uint8_t c) override {
+    feed((char)c);
+    return 1;
+  }
+
+  size_t write(const uint8_t *buffer, size_t size) override {
+    for (size_t i = 0; i < size; i++) feed((char)buffer[i]);
+    return size;
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+
+private:
+  void feed(char c) {
+    if (titles >= maxTitles || out.length() >= maxLen) return;
+
+    if (inCdata) {
+      if (c == ']') {
+        cdataBracket++;
+        return;
+      }
+      if (c == '>' && cdataBracket >= 2) {
+        inCdata = false;
+        cdataBracket = 0;
+        return;
+      }
+      while (cdataBracket > 0) {
+        if (inTitle && titleLen < (int)sizeof(title) - 1) title[titleLen++] = ']';
+        cdataBracket--;
+      }
+      if (inTitle && titleLen < (int)sizeof(title) - 1) title[titleLen++] = c;
+      return;
+    }
+
+    if (!haveTag) {
+      if (c == '<') {
+        haveTag = true;
+        closing = false;
+        tagLen = 0;
+      } else if (inTitle && titleLen < (int)sizeof(title) - 1) {
+        title[titleLen++] = c;
+      }
+      return;
+    }
+
+    if (c != '>') {
+      if (tagLen < (int)sizeof(tag) - 1) tag[tagLen++] = c;
+      // <![CDATA[ ... ]]> : il contenuto va preso alla lettera
+      if (tagLen == 8 && memcmp(tag, "![CDATA[", 8) == 0) {
+        inCdata = true;
+        haveTag = false;
+        cdataBracket = 0;
+      }
+      return;
+    }
+
+    tag[tagLen] = '\0';
+    haveTag = false;
+
+    char *p = tag;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    closing = (*p == '/');
+    if (closing) p++;
+
+    char name[16];
+    int k = 0;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n' &&
+           *p != '/' && k < (int)sizeof(name) - 1) {
+      name[k++] = tolower((unsigned char)*p++);
+    }
+    name[k] = '\0';
+
+    if (inTitle) {
+      if (closing && strcmp(name, "title") == 0) {
+        String t = decodeHtmlEntities(title, titleLen);
+        t.trim();
+        if (t.length() > 0) {
+          if (out.length() > 0) out += ' ';
+          out += t;
+          titles++;
+        }
+        inTitle = false;
+        titleLen = 0;
+      }
+    } else if (!closing && strcmp(name, "item") == 0) {
+      inItem = true;
+    } else if (closing && strcmp(name, "item") == 0) {
+      inItem = false;
+    } else if (inItem && !closing && strcmp(name, "title") == 0) {
+      inTitle = true;
+      titleLen = 0;
+    }
+  }
+
+  String &out;
+  unsigned int maxLen;
+  int maxTitles;
+  int titles = 0;
+  bool inItem = false;
+  bool inTitle = false;
+  bool haveTag = false;
+  bool closing = false;
+  bool inCdata = false;
+  int cdataBracket = 0;
+  char tag[32];
+  int tagLen = 0;
+  char title[512];
+  int titleLen = 0;
+};
+
+static String fetchRssHeadlines(const char *url, unsigned int maxLen, int maxTitles) {
+  HTTPClient http;
+  http.setTimeout(15000);
+  if (!http.begin(url)) {
+    Serial.println("NEWS: begin() fallito");
+    return "";
+  }
+
+  int httpCode = http.GET();
+  Serial.printf("NEWS: HTTP %d (%s)\n", httpCode, url);
+  if (httpCode != HTTP_CODE_OK) {
+    http.end();
+    return "";
+  }
+
+  String headlines;
+  headlines.reserve(maxLen + 256);
+  RssTitleSink sink(headlines, maxLen, maxTitles);
+  int written = http.writeToStream(&sink);
+  http.end();
+  Serial.printf("NEWS: RSS %d byte, %u titoli\n", written, (unsigned)headlines.length());
+  return headlines;
+}
+
+static String fetchNewsApiHeadlines() {
+  HTTPClient http;
+  http.setTimeout(15000);
+  http.begin("https://newsapi.org/v2/everything?q=italia&language=it&sortBy=publishedAt&pageSize=10&apiKey=" + newsApiKey);
+  int httpCode = http.GET();
+  Serial.printf("NEWS: HTTP %d (NewsAPI)\n", httpCode);
+  if (httpCode != HTTP_CODE_OK) {
+    http.end();
+    return "";
+  }
+
+  response = http.getString();
+  http.end();
+  Serial.printf("NEWS: risposta %u byte\n", (unsigned)response.length());
+
+  DynamicJsonDocument doc(32768);
+  DeserializationError error = deserializeJson(doc, response);
+  if (error) {
+    Serial.printf("NEWS: JSON error %s\n", error.c_str());
+    return "";
+  }
+
+  JsonArray articles = doc["articles"];
+  String headlines;
+  headlines.reserve(2048);
+  for (size_t i = 0; i < articles.size(); i++) {
+    const char *t = articles[i]["title"] | "";
+    if (headlines.length() > 0) headlines += ' ';
+    headlines += t;
+    if (headlines.length() >= 2000) break;
+  }
+  return headlines;
+}
+
+// ******************************************************************************
+// NEWS: grafica PETSCII generata per le 23 righe sopra lo scroller
+// ******************************************************************************
+static const int ART_ROWS = 23;          // righe disegnate
+static const int ART_COLS = 40;
+static const int ART_SIZE = 25 * ART_COLS; // 1000: include le 2 righe scroller
+
+static uint8_t newsArt[ART_SIZE];
+static uint8_t newsArtColor[ART_SIZE];
+
+static void artPut(int r, int c, uint8_t code, uint8_t color) {
+  if (r < 0 || r >= ART_ROWS || c < 0 || c >= ART_COLS) return;
+  int i = r * ART_COLS + c;
+  newsArt[i] = code;
+  newsArtColor[i] = color;
+}
+
+static void artText(int r, int c, const char *s, uint8_t color) {
+  for (; *s; s++, c++) {
+    uint8_t ch = (uint8_t)*s;
+    if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 1;        // screen code A-Z
+    else if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 1;
+    else if (ch >= '0' && ch <= '9') ch = ch - '0' + 48;  // screen code 0-9
+    artPut(r, c, ch, color);
+  }
+}
+
+static int lastArtPattern = -1;
+
+static void artFrameAndHeader() {
+  const uint8_t colBorder = 14;  // azzurro
+  const uint8_t colLine   = 3;   // ciano
+
+  for (int r = 1; r < ART_ROWS - 1; r++) {
+    artPut(r, 0, 93, colBorder);                 // |
+    artPut(r, ART_COLS - 1, 93, colBorder);
+  }
+  for (int c = 0; c < ART_COLS; c++) {
+    artPut(0, c, 64, colBorder);                 // linea orizzontale piena
+    artPut(ART_ROWS - 1, c, 64, colBorder);
+  }
+
+  artText(2, 16, "C64 NEWS", 7);
+  for (int c = 10; c <= 29; c++) artPut(4, c, 64, colLine);
+
+  // nome della fonte sotto il titolo
+  const char *name = NEWS_SOURCES[newsSourceIndex].name;
+  int len = strlen(name);
+  int c = (ART_COLS - len) / 2;
+  if (c < 2) c = 2;
+  artText(6, c, name, 15);
+}
+
+static void artPatternCity() {
+  static const uint8_t palette[] = { 1, 3, 5, 7, 10, 13, 14, 15 };
+  static const uint8_t caps[] = { 81, 86, 87, 90 };  // pallini/diamanti
+  const int base = ART_ROWS - 2;                     // riga 21
+
+  for (int c = 2; c < ART_COLS - 2; c++) {
+    if (random(100) < 28) continue;
+    int h = 1 + random(9);
+    uint8_t col = palette[random(sizeof(palette))];
+    for (int r = base - h + 1; r <= base; r++) artPut(r, c, 93, col);
+    artPut(base - h, c, caps[random(sizeof(caps))], col);
+  }
+
+  for (int i = 0; i < 36; i++) {
+    int r = 8 + random(4);
+    int c = 2 + random(ART_COLS - 4);
+    artPut(r, c, (random(3) == 0) ? 42 : 46,
+           (random(2) == 0) ? 1 : 15);
+  }
+
+  for (int i = 0; i < 3; i++) {
+    int r = 8 + random(4);
+    int c = 3 + random(ART_COLS - 8);
+    int len = 4 + random(8);
+    uint8_t ch = (random(2) == 0) ? 47 : 92;
+    uint8_t col = (random(2) == 0) ? 3 : 14;
+    for (int k = 0; k < len; k++) {
+      int cc = (ch == 47) ? c + k : c - k;
+      if (cc <= 0 || cc >= ART_COLS - 1) break;
+      artPut(r + k, cc, ch, col);
+    }
+  }
+}
+
+static void artPatternStars() {
+  for (int i = 0; i < 80; i++) {
+    int r = 8 + random(14);
+    int c = 2 + random(ART_COLS - 4);
+    uint8_t ch = (random(4) == 0) ? 42 : 46;
+    uint8_t col = (random(3) == 0) ? 15 : 1;
+    artPut(r, c, ch, col);
+  }
+
+  const int mr = 9 + random(6);
+  const int mc = 6 + random(ART_COLS - 12);
+  artPut(mr, mc, 87, 7);                       // luna
+  artPut(mr + 1, mc, 81, 7);
+
+  static const uint8_t big[] = { 81, 86, 87, 90 };
+  for (int i = 0; i < 8; i++) {
+    int r = 9 + random(12);
+    int c = 3 + random(ART_COLS - 6);
+    artPut(r, c, big[random(sizeof(big))], (random(2) == 0) ? 3 : 14);
+  }
+}
+
+static void artPatternBricks() {
+  static const uint8_t brickColors[] = { 2, 8, 9, 10, 7 };
+  for (int r = 8; r < ART_ROWS - 2; r += 2) {
+    uint8_t col = brickColors[random(sizeof(brickColors))];
+    for (int c = 2; c < ART_COLS - 2; c++) artPut(r, c, 64, col);
+    int off = ((r / 2) & 1) ? 2 : 0;
+    for (int c = 4 + off; c < ART_COLS - 2; c += 5) {
+      artPut(r + 1, c, 93, col);
+    }
+  }
+}
+
+static void artPatternMaze() {
+  static const uint8_t mazeColors[] = { 3, 5, 13, 14, 7 };
+  for (int r = 8; r < ART_ROWS - 2; r += 2) {
+    for (int c = 2; c < ART_COLS - 2; c += 2) {
+      uint8_t col = mazeColors[random(sizeof(mazeColors))];
+      if (random(2) == 0) {
+        artPut(r, c, 64, col);
+        if (random(2) == 0) artPut(r, c + 1, 64, col);
+      } else {
+        artPut(r, c, 93, col);
+        if (random(2) == 0) artPut(r + 1, c, 93, col);
+      }
+      if (random(8) == 0) artPut(r, c, 91, col);  // crocevia
+    }
+  }
+}
+
+static void buildNewsArt() {
+  randomSeed(esp_random());
+  memset(newsArt, 32, sizeof(newsArt));          // spazio
+  memset(newsArtColor, 1, sizeof(newsArtColor)); // bianco
+
+  artFrameAndHeader();
+
+  const int count = 4;
+  int pattern = random(count);
+  if (pattern == lastArtPattern) pattern = (pattern + 1) % count;
+  lastArtPattern = pattern;
+
+  switch (pattern) {
+    case 0: artPatternCity(); break;
+    case 1: artPatternStars(); break;
+    case 2: artPatternBricks(); break;
+    default: artPatternMaze(); break;
+  }
+}
+
+// ******************************************************************************
+// PETSCII SEQ dentro file .d64 (slideshow durante le NEWS)
+// ******************************************************************************
+static const int D64_SEQ_MAX = 8000;
+static uint8_t d64SeqData[D64_SEQ_MAX];
+static int d64SeqLen = 0;
+static String d64SeqName;
+
+static std::vector<String> d64Files;
+static int d64FileIndex = 0;
+static bool d64ListReady = false;
+
+struct D64SeqEntry {
+  uint8_t track;
+  uint8_t sector;
+  char name[17];
+};
+
+static D64SeqEntry d64SeqEntries[128];
+static int d64SeqCount = 0;
+
+static uint8_t d64TrackSectors(uint8_t track) {
+  if (track < 18) return 21;
+  if (track < 25) return 19;
+  if (track < 31) return 18;
+  return 17;
+}
+
+static uint32_t d64Offset(uint8_t track, uint8_t sector) {
+  uint32_t off = 0;
+  for (uint8_t t = 1; t < track; t++) off += (uint32_t)d64TrackSectors(t) * 256;
+  return off + (uint32_t)sector * 256;
+}
+
+static bool d64ReadSector(File &f, uint8_t track, uint8_t sector, uint8_t *buf) {
+  if (track < 1 || track > 40 || sector >= d64TrackSectors(track)) return false;
+  uint32_t off = d64Offset(track, sector);
+  if ((uint32_t)f.size() < off + 256) return false;
+  if (!f.seek(off)) return false;
+  return f.read(buf, 256) == 256;
+}
+
+static bool d64ParseDir(File &f) {
+  d64SeqCount = 0;
+  uint8_t t = 18;
+  uint8_t s = 1;
+  int guard = 0;
+
+  while (t != 0 && guard++ < 32) {
+    uint8_t sec[256];
+    if (!d64ReadSector(f, t, s, sec)) return false;
+    uint8_t nt = sec[0];
+    uint8_t ns = sec[1];
+
+    for (int i = 0; i < 8; i++) {
+      uint8_t *e = &sec[2 + i * 32];
+      if ((e[0] & 0x0F) != 1) continue;          // solo SEQ
+
+      uint8_t ft = e[1];
+      uint8_t fs = e[2];
+      if (ft < 1 || ft > 40 || fs >= d64TrackSectors(ft)) continue;
+
+      if (d64SeqCount < (int)(sizeof(d64SeqEntries) / sizeof(d64SeqEntries[0]))) {
+        D64SeqEntry &x = d64SeqEntries[d64SeqCount++];
+        x.track = ft;
+        x.sector = fs;
+        for (int k = 0; k < 16; k++) {
+          char c = (char)e[3 + k];
+          if (c == (char)0xA0) c = ' ';
+          x.name[k] = c;
+        }
+        x.name[16] = 0;
+      }
+    }
+
+    t = nt;
+    s = ns;
+  }
+  return d64SeqCount > 0;
+}
+
+static int d64ReadSeq(File &f, uint8_t t, uint8_t s, uint8_t *buf, int maxLen) {
+  int out = 0;
+  int guard = 0;
+
+  while (t != 0 && guard++ < 1024) {
+    uint8_t sec[256];
+    if (!d64ReadSector(f, t, s, sec)) return -1;
+
+    uint8_t nt = sec[0];
+    uint8_t ns = sec[1];
+
+    if (nt == 0) {
+      int n = ns;
+      if (n < 2) n = 2;
+      if (n > 256) n = 256;
+      for (int i = 2; i < n; i++) {
+        if (out >= maxLen) return -1;
+        buf[out++] = sec[i];
+      }
+      break;
+    }
+
+    for (int i = 2; i < 256; i++) {
+      if (out >= maxLen) return -1;
+      buf[out++] = sec[i];
+    }
+
+    t = nt;
+    s = ns;
+  }
+  return out;
+}
+
+static void buildD64List() {
+  if (d64ListReady) return;
+  d64Files.clear();
+
+  const char *dirs[] = { "/petscii-art", "/" };
+  for (int d = 0; d < 2 && d64Files.empty(); d++) {
+    File dir = SD.open(dirs[d]);
+    if (!dir) continue;
+
+    while (true) {
+      File entry = dir.openNextFile();
+      if (!entry) break;
+      if (!entry.isDirectory()) {
+        String name = entry.name();
+        String low = name;
+        low.toLowerCase();
+        if (low.endsWith(".d64")) {
+          String path = String(dirs[d]);
+          if (!path.endsWith("/")) path += '/';
+          path += name;
+          d64Files.push_back(path);
+        }
+      }
+      entry.close();
+    }
+    dir.close();
+  }
+
+  d64ListReady = true;
+  Serial.printf("SEQ: %u file .d64 trovati\n", (unsigned)d64Files.size());
+}
+
+static bool loadNextSeqImage() {
+  buildD64List();
+  if (d64Files.empty()) return false;
+
+  for (size_t attempt = 0; attempt < d64Files.size(); attempt++) {
+    if (d64FileIndex >= (int)d64Files.size()) d64FileIndex = 0;
+    String path = d64Files[d64FileIndex++];
+
+    File f = SD.open(path);
+    if (!f) continue;
+
+    if (d64ParseDir(f)) {
+      int idx = random(d64SeqCount);
+      int n = d64ReadSeq(f, d64SeqEntries[idx].track, d64SeqEntries[idx].sector,
+                         d64SeqData, D64_SEQ_MAX);
+      if (n > 0) {
+        d64SeqLen = n;
+        d64SeqName = String(d64SeqEntries[idx].name);
+        f.close();
+        Serial.printf("SEQ: %s / %s, %d byte\n",
+                      path.c_str(), d64SeqName.c_str(), d64SeqLen);
+        return true;
+      }
+    }
+    f.close();
+  }
+  return false;
+}
+
+// ******************************************************************************
+// Slideshow standalone: file .seq estratti in /petscii-seq
+// ******************************************************************************
+static std::vector<String> seqFiles;
+static int seqFileIndex = 0;
+static bool seqListReady = false;
+
+static void buildSeqList() {
+  if (seqListReady) return;
+  seqFiles.clear();
+
+  const char *dirs[] = { "/petscii-seq", "/" };
+  for (int d = 0; d < 2 && seqFiles.empty(); d++) {
+    File dir = SD.open(dirs[d]);
+    if (!dir) continue;
+
+    while (true) {
+      File entry = dir.openNextFile();
+      if (!entry) break;
+      if (!entry.isDirectory()) {
+        String name = entry.name();
+        String low = name;
+        low.toLowerCase();
+        if (low.endsWith(".seq")) {
+          String path = String(dirs[d]);
+          if (!path.endsWith("/")) path += '/';
+          path += name;
+          seqFiles.push_back(path);
+        }
+      }
+      entry.close();
+    }
+    dir.close();
+  }
+
+  std::sort(seqFiles.begin(), seqFiles.end());
+  seqListReady = true;
+  Serial.printf("SEQ: %u file .seq trovati\n", (unsigned)seqFiles.size());
+}
+
+static bool sendSeqFile(const String &path) {
+  File f = SD.open(path);
+  if (!f) return false;
+
+  size_t sz = f.size();
+  if (sz == 0 || sz > D64_SEQ_MAX) {
+    f.close();
+    return false;
+  }
+
+  int n = f.read(d64SeqData, sz);
+  f.close();
+  if (n <= 0) return false;
+
+  d64SeqLen = n;
+  d64SeqName = path;
+
+  sendByte((byte)n);
+  sendByte((byte)(n >> 8));
+  sendByte(0x00);
+  sendByte(0xA0);              // $A000: stream SEQ
+  for (int i = 0; i < n; i++) sendByte(d64SeqData[i]);
+
+  Serial.printf("SEQ standalone: %s, %d byte\n", path.c_str(), n);
+  return true;
+}
+
+static bool sendSeqStep(int step) {
+  buildSeqList();
+  int n = (int)seqFiles.size();
+  if (n == 0) return false;
+
+  int dir = (step < 0) ? -1 : 1;
+  if (step != 0) seqFileIndex = (seqFileIndex + step + n) % n;
+
+  for (int tries = 0; tries < n; tries++) {
+    if (seqFileIndex < 0) seqFileIndex = n - 1;
+    if (seqFileIndex >= n) seqFileIndex = 0;
+    if (sendSeqFile(seqFiles[seqFileIndex])) return true;
+    seqFileIndex = (seqFileIndex + dir + n) % n;
+  }
+  return false;
+}
+
+static void sendGeneratedArtBlock() {
+  buildNewsArt();
+  unsigned int total = ART_SIZE * 2;
+  sendByte((byte)(total));
+  sendByte((byte)(total >> 8));
+  sendByte(0x00);
+  sendByte(0x90);              // $9000: screen + colori
+  for (unsigned int i = 0; i < ART_SIZE; i++) sendByte(newsArt[i]);
+  for (unsigned int i = 0; i < ART_SIZE; i++) sendByte(newsArtColor[i]);
+  Serial.println("NEWS: nuovo pattern PETSCII");
+}
+
 char asciiToPET (char ascii) {
   if (ascii > 64 && ascii < 91) ascii += 128;
   if (ascii > 96 && ascii < 123) ascii -= 32;
@@ -989,16 +1704,31 @@ void setup() {
 
 
 // Invia un blocco di testo allo scroller NEWS ($3000) e termina con $FF.
-void sendScrollerMessage(const String &text) {
-  outbuffersize = text.length();
-  sendByte((byte)(outbuffersize));
-  sendByte((byte)(outbuffersize >> 8));
+void sendScrollerMessage(const String &text, bool withArt = false) {
+  unsigned int textLen = text.length();
+  if (textLen > 2047) textLen = 2047;
+  unsigned int total = 2048 + (withArt ? ART_SIZE * 2 : 0);
+
+  outbuffersize = total;
+  sendByte((byte)(total));
+  sendByte((byte)(total >> 8));
   sendByte(0x00);
-  sendByte(0x88);          // testo news a $8800 (dopo il bitmap e i dati Koala)
-  for (unsigned long x = 0; x < outbuffersize; x++) {
+  sendByte(0x88);          // testo a $8800, grafica accodata a $9000
+
+  for (unsigned int x = 0; x < textLen; x++) {
     sendByte(Ascii_to_screenCode(text[x]));
   }
   sendByte(0xff);
+
+  // Il testo occupa 2048 byte; l'eventuale grafica parte da $9000.
+  for (unsigned int x = textLen + 1; x < 2048; x++) sendByte(0x00);
+
+  if (withArt) {
+    buildNewsArt();
+    for (unsigned int x = 0; x < ART_SIZE; x++) sendByte(newsArt[x]);
+    for (unsigned int x = 0; x < ART_SIZE; x++) sendByte(newsArtColor[x]);
+    Serial.println("NEWS: grafica PETSCII accodata al testo");
+  }
 }
 
 void buildKoalaList() {
@@ -1344,7 +2074,7 @@ void loop() {
           if (SID_load_start <= 0x0FFF && sidEnd >= 0x0800) sid_conflicts |= 0x02; // charset
           if (SID_load_start <= 0x3F3F && sidEnd >= 0x2000) sid_conflicts |= 0x04; // bitmap
           if (SID_load_start <= 0x8710 && sidEnd >= 0x6000) sid_conflicts |= 0x08; // sorgente Koala
-          if (SID_load_start <= 0x8FD0 && sidEnd >= 0x8800) sid_conflicts |= 0x10; // testo NEWS
+          if (SID_load_start <= 0xBFFF && sidEnd >= 0x8800) sid_conflicts |= 0x10; // NEWS + grafica + SEQ
           if (SID_load_start <= 0xCFFF && sidEnd >= 0xC000) sid_conflicts |= 0x20; // codice
           Serial.printf("SID range: $%04X-$%04X, conflict mask: %02X\n",
                         SID_load_start, (unsigned)(sidEnd & 0xFFFF), sid_conflicts);
@@ -1426,8 +2156,19 @@ void loop() {
       break;}
 
       //======================================================== 
-      case 58:{       // 58 = get NEWS
-      Serial.println("NEWS: richiesta ricevuta");
+      // 58 = get NEWS dalla fonte corrente
+      // 70..75 = scegli la fonte e scarica le NEWS
+      // 80..85 = come 70..75 ma invia anche la grafica PETSCII
+      case 58:
+      case 70 ... 85:
+      case 90 ... 105: {
+      bool withArt = (ch >= 90);
+      if (withArt) newsSourceIndex = ch - 90;
+      else if (ch >= 70) newsSourceIndex = ch - 70;
+      if (newsSourceIndex < 0 || newsSourceIndex >= NEWS_SOURCE_COUNT) newsSourceIndex = 0;
+
+      const NewsSource &src = NEWS_SOURCES[newsSourceIndex];
+      Serial.printf("NEWS: fonte %d '%s'\n", newsSourceIndex, src.name);
 
       if (WiFi.status() != WL_CONNECTED) {
         Serial.println("NEWS: WiFi non connesso");
@@ -1435,50 +2176,9 @@ void loop() {
         break;
       }
 
-      HTTPClient http;
-      http.setTimeout(15000);
-      http.begin("https://newsapi.org/v2/everything?q=italia&language=it&sortBy=publishedAt&pageSize=10&apiKey=" + newsApiKey);
-      int httpCode = http.GET();
-      Serial.printf("NEWS: HTTP %d\n", httpCode);
-
-      if (httpCode <= 0) {
-        Serial.printf("NEWS: errore HTTP %d\n", httpCode);
-        http.end();
-        sendScrollerMessage("errore connessione news");
-        break;
-      }
-
-      response = http.getString();
-      Serial.printf("NEWS: risposta %u byte\n", (unsigned)response.length());
-
-      DynamicJsonDocument doc(32768);
-      DeserializationError error = deserializeJson(doc, response);
-      if (error) {
-        Serial.printf("NEWS: JSON error %s\n", error.c_str());
-        http.end();
-        sendScrollerMessage("errore dati news");
-        break;
-      }
-
-      JsonArray articles = doc["articles"];
-      Serial.printf("NEWS: articoli %u\n", (unsigned)articles.size());
-
-      if (articles.size() == 0) {
-        Serial.print("NEWS: nessun articolo, risposta: ");
-        Serial.println(response.substring(0, 200));
-        http.end();
-        sendScrollerMessage("nessuna notizia disponibile");
-        break;
-      }
-
-      String headlines;
-      headlines.reserve(2048);
-      for (size_t i = 0; i < articles.size(); i++) {
-        const char *t = articles[i]["title"] | "";
-        if (headlines.length() > 0) headlines += ' ';
-        headlines += t;
-        if (headlines.length() >= 2000) break;
-      }
+      String headlines = src.useNewsApi
+                           ? fetchNewsApiHeadlines()
+                           : fetchRssHeadlines(src.url, 2000, 15);
 
       String newsText = utf8ToScrollerAscii(headlines);
       if (newsText.length() > 2000) newsText.remove(2000);
@@ -1486,9 +2186,40 @@ void loop() {
 
       Serial.print("NEWS: testo: ");
       Serial.println(newsText);
-      sendScrollerMessage(newsText);
+      sendScrollerMessage(newsText, withArt);
+      break;
+   }
 
-      http.end();
+      //========================================================
+      case 86:{         // 86 = nuovo art: SEQ da .d64 o pattern generato
+      if (loadNextSeqImage()) {
+        sendByte((byte)d64SeqLen);
+        sendByte((byte)(d64SeqLen >> 8));
+        sendByte(0x00);
+        sendByte(0xA0);          // $A000: stream PETSCII SEQ
+        for (int i = 0; i < d64SeqLen; i++) sendByte(d64SeqData[i]);
+      } else {
+        sendGeneratedArtBlock();
+      }
+      break;
+   }
+
+      //========================================================
+      case 87:{         // 87 = prossima immagine SEQ (slideshow standalone)
+      if (!sendSeqStep(1)) sendGeneratedArtBlock();
+      break;
+   }
+
+      //========================================================
+      case 88:{         // 88 = immagine SEQ precedente
+      if (!sendSeqStep(-1)) sendGeneratedArtBlock();
+      break;
+   }
+
+      //========================================================
+      case 89:{         // 89 = prima immagine SEQ / avvio slideshow
+      seqFileIndex = 0;
+      if (!sendSeqStep(0)) sendGeneratedArtBlock();
       break;
    }
 

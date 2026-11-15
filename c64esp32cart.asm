@@ -26,7 +26,11 @@
     !ifdef C400 {
         !to "c64esp32menu_c000_cart.prg", cbm
     } else {
-        !to "c64esp8kROM.bin", plain
+        !ifdef PRGAUTO {
+            !to "espnewsauto.prg", cbm
+        } else {
+            !to "c64esp8kROM.bin", plain
+        }
     }
 } else {
     !ifdef C400 {
@@ -63,6 +67,10 @@ SCREEN = screenRam + SCROLL_AT_LINE * 40
 SCREEN_COLOR = $d800 + SCROLL_AT_LINE * 40
 SPEED  = 1
 
+; Blocco unico NEWS: testo a $8800, grafica PETSCII a $9000/$93E8
+ART_SOURCE = $9000
+ART_COLOR  = ART_SOURCE + $3E8
+
 !macro pushreg {
         php
         pha
@@ -98,6 +106,19 @@ SPEED  = 1
 !ifdef C400 {
         * = CODE_BASE                       ; PRG gia' a $c000: SYS 49152
 } else {
+    !ifdef PRGAUTO {
+        * = $0801                           ; PRG normale: LOAD + RUN
+        !word .basic_end
+        !word 2026
+        !byte $9e
+        !text "2061"                        ; SYS 2061
+        !byte 0
+.basic_end
+        !word 0
+!if * != 2061 {
+        !error "l'indirizzo SYS non coincide con il codice"
+}
+    } else {
     !ifdef CART {
         * = $8000
         !word coldstart
@@ -126,6 +147,7 @@ coldstart
 !if * != 2061 {
         !error "l'indirizzo SYS non coincide con il codice"
 }
+    }
     }
 }
 
@@ -267,8 +289,11 @@ main_loop
         bne +
         jmp do_news
 +       cmp #'8'
-        bne main_loop
+        bne +
         jmp do_slideshow
++       cmp #'9'
+        bne main_loop
+        jmp do_seq_slideshow
 
 ; ---------------------------------------------------------------------------
 ;  Voci di menu semplici
@@ -342,7 +367,23 @@ do_koala
 !zone do_news
 do_news
 !ifdef CART {
+        jsr $e544
+        ldx #<news_menu
+        ldy #>news_menu
+        jsr print_z
+.pick   jsr getin
+        beq .pick
+        cmp #'0'
+        bne .notzero
+        lda #9
+        bne .go
+.notzero sec
+        sbc #'1'
+        cmp #10
+        bcs .pick
+.go     sta news_source
         jsr news
+        jmp restart
 } else {
         ldx #<msg_nocart
         ldy #>msg_nocart
@@ -378,6 +419,45 @@ do_slideshow
         jmp .next
 .end    jsr slideshow_sid_stop
         jmp restart
+} else {
+        ldx #<msg_nocart
+        ldy #>msg_nocart
+        jsr show_msg
+        jmp restart
+}
+
+; ---------------------------------------------------------------------------
+;  Slideshow SEQ standalone: auto ogni ~5 s, F7 avanti, F1 indietro, SPACE esci
+; ---------------------------------------------------------------------------
+!zone do_seq
+do_seq_slideshow
+!ifdef CART {
+        jsr clear_screen_text
+        lda #89
+        jsr load_art_cmd
+.loop   lda $a2
+        sta seq_t0
+.wait   jsr getin
+        beq .timer
+        cmp #32
+        beq .done
+        cmp #136
+        beq .next
+        cmp #133
+        beq .prev
+        jmp .wait
+.timer  lda $a2
+        sec
+        sbc seq_t0
+        cmp #250
+        bcc .wait
+.next   lda #87
+        jsr load_art_cmd
+        jmp .loop
+.prev   lda #88
+        jsr load_art_cmd
+        jmp .loop
+.done   jmp restart
 } else {
         ldx #<msg_nocart
         ldy #>msg_nocart
@@ -1440,32 +1520,35 @@ stop_SID
 ;  Menu: testi
 ; ---------------------------------------------------------------------------
 menu_text
-        !pet " --------------------------------------", 13
-        !pet "        *** C64 ESP32 Cart ***", 13
-        !pet "    *** by M.Angelini C000k ***", 13
+        !pet " --------------------", 13
+        !pet "    *** C64 ESP32 Cart ***", 13
+        !pet "    *** by M.Angelini ***", 13
 !ifndef CART {
-        !pet "        (PRG: ESP32 simulato)", 13
+        !pet "   (PRG: ESP32 simulato)", 13
 }
-        !pet " --------------------------------------", 13, 13
-        !pet "1.SD directory", 13
-        !pet "2.Supermon+", 13
-        !pet "3.Send message", 13
-        !pet "4.Get time & weather", 13
-        !pet "5.Go to BASIC", 13
-        !pet "6.Show KOALA img", 13
-        !pet "7.Get NEWS", 13
-        !pet "8.Koala slideshow", 13, 0
+        !pet " --------------------", 13, 13
+        !pet "1.SD", 13
+        !pet "2.Super", 13
+        !pet "3.Msg", 13
+        !pet "4.Ora", 13
+        !pet "5.BASIC", 13
+        !pet "6.Koala", 13
+        !pet "7.NEWS", 13
+        !pet "8.Koala", 13
+        !pet "9.SEQ", 13, 0
 
+!ifndef CART {
 msg_nocart
-        !pet "Non disponibile senza cartuccia.", 13, 13
-        !pet "Premi un tasto.", 0
-msg_nokoala
-        !pet "Nessuna immagine Koala caricata.", 13
-        !pet "Caricala dalla SD ('1', file .koa).", 13, 13
+        !pet "Serve la cartuccia.", 13, 13
         !pet "Premi un tasto.", 0
 msg_sent
-        !pet "Messaggio inviato (simulato).", 13, 13
+        !pet "Messaggio inviato.", 13, 13
         !pet "Premi un tasto.", 0
+}
+msg_nokoala
+        !pet "Nessun Koala.", 13
+        !pet "Carica .koa da SD.", 13, 13
+        !pet "Premi tasto.", 0
 
 test_msg
         !pet "prova invio testo", 128
@@ -1499,6 +1582,7 @@ page_scan   !word 0
 cnt         !word 0
 name_len    !byte 0
 koala_ok    !byte 0
+news_source !byte 0
 msg_lo      !byte 0
 msg_hi      !byte 0
 
@@ -1530,7 +1614,6 @@ nmi
         beq .rem
         lda $df00                           ; pagine intere
         sta (ptr1),y
-        inc $d020
         iny
         bne .savey
         inc ptr1+1
@@ -1546,7 +1629,6 @@ nmi
         beq .complete
         lda $df00
         sta (ptr1),y
-        inc $d020
         iny
         sty RYINDEX
         dex
@@ -1614,16 +1696,44 @@ send_buffer
 .e      rts
 
 !zone news
+news_menu
+        !pet 13, "Fonte news:", 13, 13
+        !pet "1.ANSA", 13
+        !pet "2.RAI", 13
+        !pet "3.REPUBBLICA", 13
+        !pet "4.SOLE24", 13
+        !pet "5.GOOGLE", 13
+        !pet "6.NEWSAPI", 13
+        !pet "7.BBC", 13
+        !pet "8.ALJAZEERA", 13
+        !pet "9.SCMP", 13
+        !pet "0.CGTN", 13, 13
+        !pet "1-9,0.", 13, 0
+
 news
+        jsr clear_screen_text
         lda #57
         sta OPTION
         jsr receive_buffer
         jsr wait_rx
-        lda #58
+        lda news_source
+        clc
+        adc #70
         sta OPTION
-        jsr receive_buffer
-        jsr wait_rx_long
         lda koala_ok
+        bne .send
+        lda OPTION
+        clc
+        adc #20                             ; 90..99: NEWS + grafica PETSCII
+        sta OPTION
+.send   jsr receive_buffer
+        jsr wait_rx_long
+        lda #0
+        sta RXFULL
+        lda koala_ok
+        bne .noart
+        jsr copy_art                        ; grafica accodata al testo
+.noart  lda koala_ok
         sta split_mode
         lda #0
         sta sid_bg_active
@@ -1642,6 +1752,14 @@ news
         lda #1
         sta sid_bg_active
 .nosid  jsr sound
+
+        ; carica subito il primo art / immagine SEQ prima di far partire lo scroller
+        lda art_interval
+        sta art_cnt
+        lda art_interval+1
+        sta art_cnt+1
+        jsr art_tick
+
         jsr set_scroller_irq
         sei
         lda #$00
@@ -1671,10 +1789,177 @@ news
         rts
 
 !zone scroller
+; Copia i 1000 byte di screen e i 1000 byte di colori accodati al testo NEWS
+; (ricevuti a $9000/$93E8) nelle aree VIC $0400/$D800.
+copy_art
+        lda #<ART_SOURCE
+        sta ptr1
+        lda #>ART_SOURCE
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$04
+        sta ptr2+1
+        jsr copy920
+
+        lda #<ART_COLOR
+        sta ptr1
+        lda #>ART_COLOR
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$d8
+        sta ptr2+1
+        jmp copy920
+
+copy920
+        ldy #0
+        ldx #3
+.pages  lda (ptr1),y
+        sta (ptr2),y
+        iny
+        bne .pages
+        inc ptr1+1
+        inc ptr2+1
+        dex
+        bne .pages
+        ldx #232
+.tail   lda (ptr1),y
+        sta (ptr2),y
+        iny
+        dex
+        bne .tail
+        rts
+
+; Mostra un'immagine SEQ/C/G: stream PETSCII a $A000, lunghezza in SIZE.
+; Usa indirizzamento auto-modificante per non dipendere dai puntatori ZP
+; (il KERNAL CHROUT puo' usarli).
+show_seq
+        lda $01
+        pha
+        lda #$36                            ; BASIC ROM off: $A000 e' RAM
+        sta $01
+        lda #$93
+        jsr $ffd2                           ; clear screen + home
+        lda #%00010100
+        sta $d018                           ; charset ROM
+        lda #$1b
+        sta $d011
+        lda SIZE
+        sta seq_cnt
+        lda SIZE+1
+        sta seq_cnt+1
+        lda #$00
+        sta .ld+1
+        lda #$a0
+        sta .ld+2
+        ldy #0
+.ss_loop
+        lda seq_cnt
+        ora seq_cnt+1
+        beq .ss_done
+.ld     lda $a000,y
+        jsr $ffd2
+        iny
+        bne .ss_noinc
+        inc .ld+2
+.ss_noinc
+        dec seq_cnt
+        lda seq_cnt
+        cmp #$ff
+        bne .ss_loop
+        dec seq_cnt+1
+        jmp .ss_loop
+.ss_done pla
+        sta $01
+        rts
+
+; A = comando (86 news, 87 next SEQ, 88 prev SEQ, 89 first SEQ).
+; Riceve un blocco e lo mostra: SEQ a $A000 oppure art generata a $9000.
+load_art_cmd
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        lda SIZE+3
+        cmp #$a0
+        bcs .la_seq
+        jsr copy_art
+        rts
+.la_seq jsr show_seq
+        rts
+
+; Chiede un nuovo art all'ESP32. Se arriva a $A000 e' un'immagine SEQ,
+; se arriva a $9000 e' un pattern generato. Il timer passa a 15 s per le
+; immagini e torna a 60 s per i pattern generati.
+art_tick
+        lda split_mode
+        beq .at_run
+        jmp .atend
+.at_run inc art_cnt
+        bne .at_cmp
+        inc art_cnt+1
+.at_cmp    lda art_cnt+1
+        cmp art_interval+1
+        bcc .at_short
+        bne .at_fire
+        lda art_cnt
+        cmp art_interval
+        bcc .at_short
+        jmp .at_fire
+.at_short jmp .atend
+.at_fire   lda rxState
+        beq .at_go
+        jmp .atend
+.at_go  lda #0
+        sta art_cnt
+        sta art_cnt+1
+
+        lda ptr1
+        sta save_ptr
+        lda ptr1+1
+        sta save_ptr+1
+        lda sid_bg_active
+        sta save_sid
+        lda #0
+        sta sid_bg_active
+
+        lda #86
+        jsr load_art_cmd
+
+        lda SIZE+3
+        cmp #$a0
+        bcs .seq
+        jsr copy_art
+        lda #<3000
+        sta art_interval
+        lda #>3000
+        sta art_interval+1
+        jmp .at_after
+.seq    jsr show_seq
+        lda #<750
+        sta art_interval
+        lda #>750
+        sta art_interval+1
+.at_after  jsr clear_bottom
+        lda #%00010100
+        sta $d018
+        lda #$1b
+        sta $d011
+        lda #0
+        sta RXFULL
+
+        lda save_ptr
+        sta ptr1
+        lda save_ptr+1
+        sta ptr1+1
+        lda save_sid
+        sta sid_bg_active
+.atend   rts
+
 set_scroller_irq
         lda split_mode
         bne .koala
-        jsr clear_screen_text
+        jsr clear_bottom
         jmp .common
 
 .koala  jsr koala_prepare
@@ -1688,8 +1973,8 @@ set_scroller_irq
         sta ptr1
         lda #$88
         sta ptr1+1                          ; testo a $8800
-        lda #%00010010
-        sta $d018                           ; font a $0800
+        lda #%00010100
+        sta $d018                           ; top: charset ROM a $1000
         lda split_mode
         beq .irq
         lda #$3b
@@ -1725,8 +2010,10 @@ set_scroller_irq
         jsr scroll1
         jsr getin
         cmp #32
-        bne .main
-        rts
+        beq .exit
+        jsr art_tick
+        jmp .main
+.exit   rts
 
 clear_screen_text
         lda #0
@@ -1748,7 +2035,7 @@ clear_screen_text
         bne .clr
         lda #$1b
         sta $d011
-        lda #%00010010
+        lda #%00010100
         sta $d018
         lda #$c8
         sta $d016
@@ -1776,13 +2063,11 @@ irq1
         sta $0315
         lda #250
         sta $d012
-        lda split_mode
-        beq .notext
         lda #$1b
         sta $d011                           ; bottom in text mode
         lda #%00010010
-        sta $d018
-.notext lda scroll_x
+        sta $d018                           ; bottom: font 2x2 a $0800
+        lda scroll_x
         sta $d016
         jmp $ea81
 
@@ -1807,7 +2092,9 @@ irq2
         lda #$18
         sta $d016
         jmp .done
-.nobitmap lda #%00001000
+.nobitmap lda #%00010100
+        sta $d018                           ; top: charset ROM a $1000
+        lda #%00001000
         sta $d016
 .done   inc sync
         jmp $ea31
@@ -1868,6 +2155,12 @@ sid_play_hi !byte 0
 scroll_x    !byte 7
 speed       !byte SPEED
 half_char   !byte 0
+art_cnt     !word 0
+art_interval !word 3000
+seq_cnt     !word 0
+seq_t0      !byte 0
+save_ptr    !word 0
+save_sid    !byte 0
 
 } else {
 
@@ -2027,7 +2320,9 @@ CODE_LEN = payload_end - payload_rom
 
 !ifdef CART {
     !ifndef C400 {
-        * = $9fff                           ; riempie fino a 8k
-        !byte 0
+        !ifndef PRGAUTO {
+            * = $9fff                       ; riempie fino a 8k
+            !byte 0
+        }
     }
 }

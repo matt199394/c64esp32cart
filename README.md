@@ -575,9 +575,10 @@ Used by NEWS + Koala + menu (BASIC ROM disabled with `$01=$36`):
 
 ## Credits
 
-- Original idea and hardware: *chat64 cart* by Bart Venneker and
+- Hardware based on the *chat64 cart* by Bart Venneker and
   Theo van den Beld.
-- ESP32 firmware and C64 code: Matteo Angelini.
+- Early ESP32 firmware and C64 code written by M. Angelini, now heavily
+  rewritten by DeepSeek Flash.
 - `sidreloc`: <https://github.com/lemontree/sidreloc>.
 - NEWS sources: public RSS feeds of the respective publishers;
   weather: OpenWeather.

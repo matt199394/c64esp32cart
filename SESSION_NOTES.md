@@ -1,8 +1,9 @@
 # C64 ESP32 Cart — note sessione `pi-work`
 
-Ultimo aggiornamento: 2026-11-16
+Ultimo aggiornamento: 2026-11-17 (sessione serale, vedi sezione 15)
 Branch di sviluppo: `pi-work`  
-`main`: versione stabile, il merge verrà fatto solo alla PR finale.
+`main`: versione stabile; contiene il merge delle PR #1 e #2
+(commit `4cedc61`). Repository **pubblico** su GitHub con Issues abilitate.
 
 Questo file serve a recuperare il contesto della sessione di lavoro.
 
@@ -398,7 +399,10 @@ Non è OCR: è la pagina Televideo convertita in immagine Koala.
 
 ## 8. Git e sicurezza
 
-Il repository GitHub è ora **privato**.
+Il repository GitHub è **pubblico** dal 2026-11-17:
+<https://github.com/matt199394/c64esp32cart> (vedi sezione 15.8).
+Le credenziali elencate piu' sotto sono quindi da considerarsi esposte e
+**vanno ruotate**.
 
 Branch di lavoro:
 
@@ -406,7 +410,7 @@ Branch di lavoro:
 pi-work
 ```
 
-`main` resta stabile; il merge verrà fatto con una PR quando il progetto sarà pronto.
+`main` resta stabile; si aggiorna solo con PR da `pi-work` (squash merge).
 
 ### File ignorati
 
@@ -692,3 +696,158 @@ nella pagina `$C000-$CFFF`.
 - Tra un'immagine Koala e l'altra lo schermo viene pulito/annerito
   (`slide_text_mode` chiama `clear_screen_text`) per evitare caratteri residui
   durante il passaggio bitmap -> testo -> bitmap.
+
+---
+
+## 15. Sessione 2026-11-17 (serale) — EPROM, PR e repository pubblico
+
+Riepilogo della serata: dalla EPROM che non partiva al repository pubblico con
+documentazione completa. Tutto verificato su hardware reale.
+
+### 15.1 Schermo blu con bordo celeste: banco EPROM e jumper
+
+Sintomo: accensione con la 27C512 programmata, nessun avvio della cartuccia.
+
+Dalla netlist KiCad (`c64esp32crt1.1_kicad7/ESP32Hardware.kicad_pcb`):
+
+| Segnale EPROM | Collegamento |
+|---|---|
+| pin 20 `/CE` | GND fisso |
+| pin 22 `/OE` | jumper **J9**: pin1 `/ROML`, pin3 `/ROMH` |
+| pin 26 `A13` | pull-up `R9` -> +5V + jumper **J4** -> GND |
+| pin 27 `A14` | pull-up `R10` -> +5V + jumper **J5** -> GND |
+| pin 1 `A15` | pull-up `R11` -> +5V + jumper **J6** -> GND |
+
+Quindi **senza jumper la EPROM legge il banco 7** (`0xE000`): se il bootstrap
+sta solo nel banco 0 la C64 non trova `CBM80` e va al BASIC normale.
+
+Attenzioni emerse:
+- `J3` (EXROM -> GND) tiene la cartuccia sempre mappata e rende inutile il
+  comando 112: in uso normale va **aperto**;
+- `J9` deve stare su **ROM-L** (pin 1-2) per una cartuccia 8K a `$8000-$9FFF`;
+- `J2` (`GAME`) va **aperto**.
+
+### 15.2 `tools/make_eprom_image.sh`
+
+Nuovo script: immagine 64K per la 27C512 da un binario da 8K.
+
+```bash
+tools/make_eprom_image.sh 0 c64esp8kBOOT.bin        # banco 0, resto 0xFF
+tools/make_eprom_image.sh all c64esp8kBOOT.bin      # replicato negli 8 banchi
+```
+
+La modalita' `all` rende la EPROM indipendente dai jumper: e' quella usata per
+la cartuccia definitiva. Programmazione con TL866II+:
+
+```bash
+minipro -p 'W27C512@DIP28' -z
+minipro -p 'W27C512@DIP28' -w W27C512_c64esp8kBOOT.bin
+minipro -p 'W27C512@DIP28' -r /tmp/verify.bin && cmp /tmp/verify.bin W27C512_c64esp8kBOOT.bin
+```
+
+Contatti del ZIF: piu' volte `Bad contact on pin:1` / `pin:25..28` -> basta
+riaprire la leva, raddrizzare i piedini e reinserire; il read-back deve
+combaciare byte per byte.
+
+### 15.3 Build di debug del bootstrap (`-DDBGBOOT`)
+
+Per capire dove si fermava il loader:
+
+```bash
+acme -DDBGBOOT=1 -o c64esp8kBOOT_dbg.bin bootstrap.asm
+```
+
+Segnali a schermo (colore del bordo + carattere): bordo bianco/sfondo nero =
+EPROM mappata; `2` ciano = loader a `$C000`; `3` verde = risposta al comando
+112; `4` giallo = nome file inviato; `5` viola = PRG ricevuto; `6` verde
+chiaro = entry point ricevuto. Poi stampa i primi 16 byte a `$0801`, l'ultima
+pagina scritta, l'entry point e un **checksum a 16 bit** del PRG (`5A47` per
+`espnewsauto.prg`), e aspetta un tasto prima del salto.
+
+### 15.4 Il bug vero: CLR / relink BASIC nel bootstrap
+
+Il bootstrap faceva, subito prima di `jmp (PRG_ENTRY)`:
+
+```asm
+        jsr $a659       ; CLR
+        jsr $a533       ; relink righe BASIC
+```
+
+Il coldstart da cartuccia inizializza **solo il KERNAL** (`IOINIT`, `RAMTAS`,
+`RESTOR`, `CINT`): `TXTTAB`/`VARTAB`/`ARYTAB`/`STREND` possono contenere
+spazzatura, quindi `CLR`/`LINKPRG` andavano in crash. Sintomo: dopo il
+caricamento del PRG lo schermo restava fermo (i marker `23456` non venivano
+nemmeno cancellati), nessuna reazione ai tasti, menu mai avviato.
+
+Rimosse entrambe le chiamate: il PRG fa da solo l'init BASIC che gli serve.
+Con il fix il menu parte dalla EPROM bootstrap.
+
+Aggiunta anche una nota nel sorgente e nei documenti, per non reintrodurle.
+
+### 15.5 Immagine definitiva
+
+```bash
+acme bootstrap.asm                                  # c64esp8kBOOT.bin (8192 byte)
+tools/make_eprom_image.sh all c64esp8kBOOT.bin       # W27C512_c64esp8kBOOT.bin
+```
+
+| File | Dimensione | sha256 |
+|---|---:|---|
+| `c64esp8kBOOT.bin` | 8192 | `66cd34285219a18c6cb903c7d49a060a4538c5548049e8c76df01f9cb417fb5e` |
+| `W27C512_c64esp8kBOOT.bin` | 65536 | `193b32b287a80974e57efec42c1fc14c13755ef5dd729ce62d4335ac7cd28ea8` |
+
+Scritta e verificata (read-back identico, banchi 0-7 tutti uguali al binario).
+
+### 15.6 Documentazione e immagini
+
+- `README.md` **riscritto in inglese**: funzioni, hardware/pinout, capitolo
+  **Schematic**, menu e tasti, **Screenshot**, jumper e banchi EPROM, flusso di
+  avvio, firmware ESP32, `secrets.h` (WiFi/OpenWeather/NTP/NewsAPI), SD,
+  formato Koala, rilocazione SID (`$4000`/`$9000` + maschere), arte PETSCII,
+  programmazione 27C512, comandi di build, layout memoria, troubleshooting.
+- **Screenshot reali** (snapshot VLC del video del C64) in
+  `docs/screenshots/`: `main.jpg`, `dir.jpg`, `supermon.jpg`, `news-src.jpg`,
+  `news-bg.jpg`, `news-petscii.jpg`, `weather.jpg`, `sid.jpg`, disposte in una
+  tabella 2x4 da 420 px. `tools/render_menu.py` resta come fallback
+  (`docs/renders/`, ignorato da git).
+- Foto cartuccia `sideUp1/sideUp2/sideBottom` ridotte a 520 px e messe in una
+  tabella a tre colonne con didascalie; `schematic.jpg` da 1094 KB a 288 KB.
+- La schermata meteo e' stata **ritoccata a pixel**: nome della citta'
+  sostituito con `ROMA` (glifi presi dalla riga sottostante della stessa foto),
+  per non pubblicare la localita' dell'autore.
+
+### 15.7 Privacy: coordinate spostate in `secrets.h`
+
+- Rimosse dal firmware `String lat/lon` con le coordinate di casa.
+- Ora si usano `openweatherLat` / `openweatherLon` da `secrets.h`
+  (placeholder `xxxxx` in `secrets.example.h`).
+- `weatherLocationConfigured()`: se non configurate il firmware non chiama
+  l'API e stampa `Meteo: lat/lon non configurate in secrets.h`.
+
+### 15.8 Git: PR, merge e repository pubblico
+
+| Evento | Commit |
+|---|---|
+| PR #1 `pi-work -> main` (13 commit) squash-merged | `2a27359` |
+| PR #2 (privacy coordinate + screenshot ritoccato) squash-merged | `4cedc61` |
+| `pi-work` riallineato a `main` dopo ogni merge | `4cedc61` |
+
+- Visibilita' cambiata a **public** con
+  `gh api -X PATCH repos/matt199394/c64esp32cart -f visibility=public`
+  (in gh 2.46 il flag `--accept-visibility-change-consequences` non esiste).
+- **Issues abilitate** (`-F has_issues=true`).
+- Verificato in anonimo: `secrets.h` e `firmware_backup/` rispondono 404.
+
+### 15.9 Da fare alla prossima sessione
+
+1. **Ruotare le credenziali** ancora nella storia Git ora pubblica:
+   password WiFi `Home&Life SuperWiFi-0B6D`, OpenWeather `be8d2977…`,
+   NewsAPI `a8255caf…` (commit `03bf297`, `346eeb9`, `37bf9bb`, `2dded14`),
+   poi aggiornare `c64esp32Cart/secrets.h`.
+2. **Riflashare l'ESP32** (ultima modifica: lat/lon in `secrets.h`).
+3. **Fix cosmetico directory**: `_` mostrato come `←` (`asciiToPET()` lascia
+   passare ASCII `$5F`, che in PETSCII e' la freccia) -> mappare su `$A4` o
+   ripiegare su `-`.
+4. Test funzionali rimasti (uscita SID con SPACE, paginazione directory,
+   sfondi NEWS, Supermon, nomi lunghi).
+5. Manca uno screenshot reale della pagina **HELP**.

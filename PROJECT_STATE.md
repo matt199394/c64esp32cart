@@ -1,27 +1,39 @@
 # PROJECT_STATE — C64 ESP32 Cart
 
-Aggiornato: **2026-11-17**  
+Aggiornato: **2026-11-17 (sessione serale)**  
 Branch di sviluppo: **`pi-work`**  
-`main`: stabile; il merge `pi-work → main` va fatto solo alla PR finale.
+`main`: stabile, contiene il merge delle PR #1 e #2; il repository è **pubblico**.
 
 Questo file è il riepilogo operativo per riprendere il progetto in una nuova
 sessione. Le regole e i comandi rapidi restano anche in [`AGENTS.md`](AGENTS.md);
-il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md).
+il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md) (la serata del
+2026-11-17 è nella sezione 15).
 
 ---
 
 ## Ripresa in 30 secondi
 
-- Firmware ESP32 principale: `c64esp32Cart`, già compilato e caricato su
-  `/dev/ttyACM0` con FQBN `esp32:esp32:mhetesp32minikit`.
+- **Il progetto funziona su hardware reale**: 27C512 programmata col bootstrap
+  negli 8 banchi, la C64 autostarta, il menu parte, tutte le funzioni
+  principali sono state provate (screenshot reali in `docs/screenshots/`).
+- **Prossimo lavoro**: fix cosmetico della lista directory (`_` mostrato come
+  `←`, vedi [Test da fare](#test-da-fare--prossimi-passi)) — richiede
+  ricompilare e riflashare l'ESP32.
+- **Prima di tutto**: ruotare le credenziali ancora nella storia Git pubblica
+  (password WiFi, API key OpenWeather e NewsAPI) e aggiornare `secrets.h`.
+- Repository: <https://github.com/matt199394/c64esp32cart> (pubblico, Issues
+  abilitate). `main` = `4cedc61`, `pi-work` riallineato a `main`.
+- Firmware ESP32 principale: `c64esp32Cart`, compilato con successo
+  (`esp32:esp32:mhetesp32minikit`, 85% flash); da riflashare su `/dev/ttyACM0`
+  dopo l'ultima modifica (lat/lon spostate in `secrets.h`).
 - Ultima build C64 completa: codice fino a `$CFFB` (5 byte liberi in
   `$C000-$CFFF`).
 - La SD della cartuccia è la **7.4G label `8074-0EDB`** (mount tipico
-  `/run/media/matteo/8074-0EDB`). Alla fine della sessione era stata scollegata.
+  `/run/media/matteo/8074-0EDB`). Alla fine della sessione era scollegata.
 - Sulla SD devono esserci `espnewsauto.prg` (root) e i file rinominati; i PRG
   principali sono stati copiati con gli hash indicati sotto.
-- È stato aggiunto il **bootstrap EPROM 8K**: `bootstrap.asm` →
-  `c64esp8kBOOT.bin` (8192 byte).
+- Il **bootstrap EPROM 8K** (`bootstrap.asm` → `c64esp8kBOOT.bin`) è provato e
+  funzionante.
 - **2026-11-17: bootstrap provato su hardware reale e funzionante**: la C64
   autostarta da EPROM, il loader alza EXROM (comando 112), carica
   `espnewsauto.prg` dalla SD e parte il menu.

@@ -11,7 +11,9 @@ Contesto operativo per Pi. Per il diario completo della sessione vedi
 
 - Branch di sviluppo: `pi-work`
 - `main`: stabile
-- Il merge `pi-work → main` va fatto solo alla PR finale
+- `main` si aggiorna solo con PR da `pi-work` (squash merge); dopo il
+  merge `pi-work` va riallineato a `main` (`git reset --hard origin/main` +
+  `git push --force-with-lease`)
 - Firmware ESP32 principale attualmente flashato: `c64esp32Cart`
 - Firmware `audio_test` e `comms_test` sono solo prove separate, non attivi
 
@@ -163,7 +165,9 @@ cd audio_test && acme c64_audio_test.asm
 - Il locale `secrets.h` contiene WiFi e API key; usare
   `c64esp32Cart/secrets.example.h` come template
 - Le vecchie credenziali sono ancora nella storia Git: ruotare WiFi e API key
-- Repository GitHub privato
+- Repository GitHub **pubblico** dal 2026-11-17 con Issues abilitate:
+  <https://github.com/matt199394/c64esp32cart>. Le vecchie credenziali sono
+  nella storia pubblica: vanno ruotate.
 - Push di sviluppo:
 
 ```bash
@@ -251,7 +255,7 @@ git push origin pi-work
 1. Webradio: decoder MP3/AAC ESP32, PCM mono 11 kHz, nibble alto → `$D418`
 2. Eventuale conversione Televideo direttamente sull'ESP32
 3. Rifinitura pausa musicale durante il caricamento immagini
-4. PR finale `pi-work → main`
+4. Fix cosmetico lista directory (`_` mostrato come `←` in `asciiToPET`)
 
 ## File di riferimento
 

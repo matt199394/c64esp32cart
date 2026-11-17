@@ -126,39 +126,50 @@ MAIN MENU
 ## Screenshots
 
 All pictures below are **real captures of the cartridge running on a C64**
-(VLC snapshots of the video output, downscaled to 1000 px wide).
+(VLC snapshots of the video output, scaled down to 1000 px wide).
 
-### Main menu
-
-![main menu](docs/screenshots/main.jpg)
-
-### SD directory
-
-![directory](docs/screenshots/dir.jpg)
-
-### SUPERMON
-
-![supermon](docs/screenshots/supermon.jpg)
-
-### NEWS source selection
-
-![news source](docs/screenshots/news-src.jpg)
-
-### NEWS background selection
-
-![news background](docs/screenshots/news-bg.jpg)
-
-### NEWS with a Koala background
-
-![news with koala background](docs/screenshots/news.jpg)
-
-### CLOCK / WEATHER
-
-![weather](docs/screenshots/weather.jpg)
-
-### SID player
-
-![sid player](docs/screenshots/sid.jpg)
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/main.jpg" width="420" alt="main menu"><br>
+      <b>Main menu</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/dir.jpg" width="420" alt="SD directory"><br>
+      <b>SD directory</b>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/supermon.jpg" width="420" alt="supermon"><br>
+      <b>SUPERMON ($A000)</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/news-src.jpg" width="420" alt="news source"><br>
+      <b>NEWS source selection</b>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/news-bg.jpg" width="420" alt="news background"><br>
+      <b>NEWS background selection</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/news-petscii.jpg" width="420" alt="news with PETSCII art"><br>
+      <b>NEWS with a PETSCII art background (SEQ art from /petscii-art)</b>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/weather.jpg" width="420" alt="clock weather"><br>
+      <b>CLOCK / WEATHER</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/sid.jpg" width="420" alt="sid player"><br>
+      <b>SID player</b>
+    </td>
+  </tr>
+</table>
 
 > Missing a real photo for a screen? `tools/render_menu.py docs/renders`
 > writes fallback renders of the ESP32 templates (same texts, colours and

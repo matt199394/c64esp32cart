@@ -62,7 +62,11 @@ String directoryListing;
 uint16_t prgEntry = 0;
 uint8_t sid_conflicts = 0;
 int slideshowIndex = 0;
+int koalaCurrent = 0;
 std::vector<String> koalaList;
+String koalaListDir = "";          // directory a cui si riferisce koalaList
+std::vector<String> sidList;
+String currentSidName = "";
 
 //BluetoothSerial SerialBT;
 
@@ -89,6 +93,7 @@ int inbuffersize = 0;
 char *outbuffer;
 
 String currentDate;
+String currentDateOnly;
 String weatherMain = "";
 String weatherDescription = "";
 String weatherLocation = "";
@@ -306,6 +311,12 @@ String buildDirectoryListing(File folder) {
   listing.reserve(1024);
   listing = "/..\r";
 
+  // Approfittiamo della stessa scansione della directory per preparare la
+  // lista dei Koala: cosi' il comando 62 (avvio slideshow) non deve piu'
+  // rileggere tutta la SD e l'immagine parte subito.
+  koalaList.clear();
+  sidList.clear();
+
   while (true) {
     File entry = folder.openNextFile();
     if (!entry) {
@@ -319,6 +330,13 @@ String buildDirectoryListing(File folder) {
     }
 
     String name(entryName);
+    if (!entry.isDirectory() && isKoalaName(name)) {
+      koalaList.push_back(name);
+    }
+    if (!entry.isDirectory() && isSidName(name)) {
+      sidList.push_back(name);
+    }
+
     if (!entry.isDirectory() &&
         (name.equalsIgnoreCase("directory.txt") || name.equalsIgnoreCase("koalist.txt"))) {
       entry.close();
@@ -336,6 +354,8 @@ String buildDirectoryListing(File folder) {
     // Il testo viene copiato in RAM C64 a partire da $1000.
     // Tengo la lista sotto $4000, per non sovrascrivere i SID rilocati
     // a $4000-$5FFF (e per non arrivare al codice a $C000).
+    // Appena la lista e' piena mi fermo: scorrere tutto il root di una SD
+    // grande puo' richiedere troppo tempo e far scadere wait_rx_long.
     if (listing.length() + line.length() > 12032) {
       break;
     }
@@ -357,6 +377,7 @@ void buildDirectoryList() {
 
   directoryListing = buildDirectoryListing(dir);
   dir.close();
+  koalaListDir = currentDir;          // lista Koala gia' pronta per lo slideshow
 
   Serial.println("directory:");
   Serial.print(directoryListing);
@@ -434,7 +455,8 @@ void sendDirectory() {
 void getTime(){
   currentDate = "";
   if (WiFi.status() != WL_CONNECTED) {
-    currentDate = "WiFi non connesso\r\n";
+    currentDate = "WiFi not connected\r\n";
+    currentDateOnly = "NO DATE";
     return;
   }
 
@@ -464,7 +486,8 @@ void getTime(){
   int currentYear = ptm->tm_year+1900;
   
   //Print complete date:
-  currentDate = "Time: " + formattedTime + "\r\n" + "Date: " + weekDay + " " + String(monthDay) + " " + currentMonthName + " " + String(currentYear)+ "\r\n";
+  currentDateOnly = weekDay + " " + String(monthDay) + " " + currentMonthName + " " + String(currentYear);
+  currentDate = "Time: " + formattedTime + "\r\n" + "Date: " + currentDateOnly + "\r\n";
   }
 
 
@@ -512,7 +535,7 @@ void getWeatherData(){
       tempMin = obj["main"]["temp_min"];
       tempMax = obj["main"]["temp_max"];
       windSpeed = obj["wind"]["speed"];
-      clouds = obj["Clouds"]["all"];
+      clouds = obj["clouds"]["all"];
       weatherString = "Location: " + weatherLocation + "," + country + "\r\n";
       weatherString += "Description: " + weatherDescription + "\r\n";
       weatherString += "Temp: " + String(temp,1) + "c (" + String(tempMin,1) + "-" + String(tempMax,1) + ")  "+ "\r\n" ;
@@ -1277,10 +1300,56 @@ static std::vector<String> seqFiles;
 static int seqFileIndex = 0;
 static bool seqListReady = false;
 
+// Legge una lista gia' pronta (manifest.txt o seqlist.txt) senza scandire
+// tutte le entry della directory. Ogni riga puo' essere:
+//   nome.seq
+//   nome.seq<TAB>dimensione<TAB>origine<TAB>nome CBM
+//   /petscii-seq/nome.seq
+static bool readSeqListFile(const char *path) {
+  seqFiles.clear();
+  File f = SD.open(path);
+  if (!f) return false;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    int tab = line.indexOf('\t');
+    String name = (tab >= 0) ? line.substring(0, tab) : line;
+    name.trim();
+
+    String low = name;
+    low.toLowerCase();
+    if (!low.endsWith(".seq")) continue;
+
+    if (!name.startsWith("/")) name = String("/petscii-seq/") + name;
+    seqFiles.push_back(name);
+  }
+  f.close();
+  return !seqFiles.empty();
+}
+
 static void buildSeqList() {
   if (seqListReady) return;
-  seqFiles.clear();
+  seqFiles.reserve(1024);
 
+  // 1) manifest.txt creato da tools/extract_seq.py: un solo file da leggere.
+  if (readSeqListFile("/petscii-seq/manifest.txt")) {
+    seqListReady = true;
+    Serial.printf("SEQ: %u file da manifest\n", (unsigned)seqFiles.size());
+    return;
+  }
+
+  // 2) cache creata dal firmware al primo avvio.
+  if (readSeqListFile("/petscii-seq/seqlist.txt")) {
+    seqListReady = true;
+    Serial.printf("SEQ: %u file da cache\n", (unsigned)seqFiles.size());
+    return;
+  }
+
+  // 3) fallback: scansione della directory (lenta la prima volta).
+  seqFiles.clear();
   const char *dirs[] = { "/petscii-seq", "/" };
   for (int d = 0; d < 2 && seqFiles.empty(); d++) {
     File dir = SD.open(dirs[d]);
@@ -1306,8 +1375,16 @@ static void buildSeqList() {
   }
 
   std::sort(seqFiles.begin(), seqFiles.end());
+
+  // Salva la cache per i prossimi avvii.
+  File cache = SD.open("/petscii-seq/seqlist.txt", FILE_WRITE);
+  if (cache) {
+    for (size_t i = 0; i < seqFiles.size(); i++) cache.println(seqFiles[i]);
+    cache.close();
+  }
+
   seqListReady = true;
-  Serial.printf("SEQ: %u file .seq trovati\n", (unsigned)seqFiles.size());
+  Serial.printf("SEQ: %u file .seq trovati (cache creata)\n", (unsigned)seqFiles.size());
 }
 
 static bool sendSeqFile(const String &path) {
@@ -1695,7 +1772,9 @@ void setup() {
   SD.remove("/directory.txt");          // pulizia del vecchio file temporaneo
   currentDir = parentDir = "/";
   buildDirectoryList();
-  delay(500);
+  // Aspetta che il C64 abbia copiato il bootstrap dalla EPROM prima di
+  // alzare EXROM. Il loader puo' anche inviare prima il comando 112.
+  delay(1500);
   digitalWrite(CLED, LOW);
   Serial.println("");
   Serial.println("done!");
@@ -1731,7 +1810,232 @@ void sendScrollerMessage(const String &text, bool withArt = false) {
   }
 }
 
+// ******************************************************************************
+// Menu template: 1000 byte di screen RAM + 1000 byte di color RAM.
+// Viene inviato direttamente al C64 a $9800 (comando 64) e mostrato da lì.
+// Uso screen code: nel charset minuscolo (D018=23) i codici 65-90 sono le
+// lettere maiuscole; 64 e 93 sono le linee orizzontale/verticale, 43 il '+'.
+// ******************************************************************************
+static uint8_t menuScreen[1000];
+static uint8_t menuColors[1000];
+static bool menuUpperCharset = false;
+
+static uint8_t menuAsciiToScreen(char c) {
+  if (c >= 'a' && c <= 'z') c -= 32;
+  if (menuUpperCharset && c >= 'A' && c <= 'Z') return (uint8_t)(c - 'A' + 1);
+  return (uint8_t)c;
+}
+
+static void menuSet(int x, int y, uint8_t code, uint8_t color) {
+  if (x < 0 || x >= 40 || y < 0 || y >= 25) return;
+  int i = y * 40 + x;
+  menuScreen[i] = code;
+  menuColors[i] = color;
+}
+
+static void menuCenter(int row, const char *text, uint8_t color) {
+  int len = strlen(text);
+  int x = (40 - len) / 2;
+  if (x < 0) x = 0;
+  for (int i = 0; i < len && x + i < 40; i++) {
+    menuSet(x + i, row, menuAsciiToScreen(text[i]), color);
+  }
+}
+
+static void menuLeft(int row, int col, const char *text, uint8_t color) {
+  int len = strlen(text);
+  for (int i = 0; i < len && col + i < 40; i++) {
+    menuSet(col + i, row, menuAsciiToScreen(text[i]), color);
+  }
+}
+
+static void menuClearScreen() {
+  memset(menuScreen, 32, sizeof(menuScreen));
+  memset(menuColors, 1, sizeof(menuColors));
+}
+
+static void drawFrame() {
+  for (int x = 1; x < 39; x++) {
+    menuSet(x, 0, 64, 14);
+    menuSet(x, 24, 64, 14);
+  }
+  for (int y = 1; y < 24; y++) {
+    menuSet(0, y, 93, 14);
+    menuSet(39, y, 93, 14);
+  }
+  menuSet(0, 0, 43, 14);
+  menuSet(39, 0, 43, 14);
+  menuSet(0, 24, 43, 14);
+  menuSet(39, 24, 43, 14);
+}
+
+static void buildMenuScreen() {
+  menuClearScreen();
+  drawFrame();
+
+  menuCenter(2, "C64 ESP32 CARTRIDGE", 7);
+  menuCenter(3, "BY M.ANGELINI", 15);
+  menuLeft(5, 8, "MAIN MENU", 3);
+
+  static const char *items[] = {
+    "SD CARD", "SUPERMON", "HELP", "CLOCK / WEATHER", "BASIC",
+    "KOALA", "NEWS", "KOALA SLIDESHOW", "PETSCII SLIDESHOW"
+  };
+  for (int i = 0; i < 9; i++) menuLeft(6 + i, 8, items[i], 1);
+
+  menuLeft(16, 8, "UP/DOWN SELECT - RETURN ENTER", 15);
+  menuLeft(19, 8, "LOAD PRG/GAMES, SID, KOALA", 3);
+  menuLeft(20, 8, "NEWS + WEATHER FROM INTERNET", 3);
+  menuLeft(21, 8, "PETSCII ART FROM SD CARD", 3);
+}
+
+static void buildFrameScreen() {
+  menuClearScreen();
+  drawFrame();
+}
+
+static void buildNewsSourceScreen() {
+  menuClearScreen();
+  drawFrame();
+  menuCenter(2, "NEWS SOURCE", 7);
+  menuCenter(4, "SELECT WITH UP/DOWN AND RETURN", 15);
+
+  for (int i = 0; i < NEWS_SOURCE_COUNT && i < 10; i++) {
+    menuLeft(6 + i, 8, NEWS_SOURCES[i].name, 1);
+  }
+
+  menuLeft(18, 8, "UP/DOWN SELECT - RETURN ENTER", 3);
+}
+
+static void buildNewsBackgroundScreen() {
+  menuClearScreen();
+  drawFrame();
+  menuCenter(2, "NEWS BACKGROUND", 7);
+  menuCenter(4, "SELECT WITH UP/DOWN AND RETURN", 15);
+
+  static const char *items[] = {
+    "PETSCII ART", "KOALA", "CLOCK / WEATHER"
+  };
+  for (int i = 0; i < 3; i++) menuLeft(6 + i, 8, items[i], 1);
+
+  menuLeft(12, 8, "KOALA MUST BE LOADED FROM SD", 3);
+  menuLeft(18, 8, "UP/DOWN SELECT - RETURN ENTER", 3);
+}
+
+static void buildWeatherScreen() {
+  // Il template meteo viene mostrato con il charset ROM maiuscolo ($1000):
+  // le lettere vanno quindi codificate come screen code 1..26.
+  menuUpperCharset = true;
+
+  menuClearScreen();
+  drawFrame();
+
+  bool online = (WiFi.status() == WL_CONNECTED);
+  menuCenter(2, "CLOCK / WEATHER", 7);
+
+  String timeStr = online ? timeClient.getFormattedTime() : "--:--:--";
+  menuLeft(4, 16, timeStr.c_str(), 7);
+
+  menuCenter(6, online ? currentDateOnly.c_str() : "NO DATE", 15);
+
+  if (online && weatherLocation.length() > 0) {
+    String loc = "LOCATION: " + weatherLocation + ", " + country;
+    menuCenter(9, loc.c_str(), 3);
+    menuCenter(10, weatherDescription.c_str(), 1);
+
+    String t = "TEMP: " + String(temp, 1) + " C  MIN " + String(tempMin, 1) + "  MAX " + String(tempMax, 1);
+    String h = "HUMIDITY: " + String(humidity) + " %";
+    String p = "PRESSURE: " + String(pressure) + " HPA";
+    String w = "WIND: " + String(windSpeed, 1) + " M/S";
+    String c = "CLOUDS: " + String(clouds) + " %";
+
+    menuCenter(12, t.c_str(), 1);
+    menuCenter(13, h.c_str(), 1);
+    menuCenter(14, p.c_str(), 1);
+    menuCenter(15, w.c_str(), 1);
+    menuCenter(16, c.c_str(), 1);
+  } else {
+    menuCenter(9, online ? "WEATHER DATA UNAVAILABLE" : "WIFI NOT CONNECTED", 10);
+    menuCenter(10, online ? "CHECK SD / INTERNET" : "CHECK SECRETS.H", 1);
+  }
+
+  menuCenter(20, "SPACE = BACK TO MENU", 15);
+  menuUpperCharset = false;
+}
+
+static void buildSidScreen() {
+  menuUpperCharset = false;
+  menuClearScreen();
+  drawFrame();
+  menuCenter(2, "SID PLAYER", 7);
+
+  int row = 4;
+  int i = 0;
+  while (info_string_SID[i] && row < 18) {
+    String line = "";
+    while (info_string_SID[i] && info_string_SID[i] != '\r' && info_string_SID[i] != '\n') {
+      line += info_string_SID[i++];
+    }
+    while (info_string_SID[i] == '\r' || info_string_SID[i] == '\n') i++;
+    if (line.length() > 32) line = line.substring(0, 32);
+    menuLeft(row++, 4, line.c_str(), 1);
+  }
+
+  menuLeft(19, 6, "F1 PREV - F7 NEXT - SPACE MENU", 3);
+}
+
+static void sendScreenTemplate(uint8_t destHigh) {
+  const unsigned int len = 2000;
+  sendByte((byte)len);
+  sendByte((byte)(len >> 8));
+  sendByte(0x00);
+  sendByte(destHigh);
+  for (unsigned int i = 0; i < 1000; i++) sendByte(menuScreen[i]);
+  for (unsigned int i = 0; i < 1000; i++) sendByte(menuColors[i]);
+}
+
+// ******************************************************************************
+// HELP page, sent to the C64 at $A000 and printed with CHROUT.
+// PETSCII codes: 0x93 clear, 0x05 white, 0x9E yellow, 0x9F cyan, 13 = newline.
+// ******************************************************************************
+static const char helpText[] =
+  "\x93\x9e"
+  "+--------------------------------------+\r"
+  "      C64 ESP32 CARTRIDGE - HELP\r"
+  "+--------------------------------------+\r"
+  "\x05"
+  " SD CARD   LOAD PRG/GAMES, SID, KOALA\r"
+  "           F1/F7 PAGE, RETURN OPEN\r"
+  "           Q = QUIT DIRECTORY\r"
+  " SUPERMON  RAM MONITOR AT $A000\r"
+  " HELP      THIS PAGE\r"
+  " CLOCK     TIME AND WEATHER\r"
+  "           FROM OPENWEATHER\r"
+  " BASIC     RETURN TO BASIC\r"
+  " KOALA     SHOW LOADED KOALA\r"
+  " NEWS      MULTIPLE SOURCES:\r"
+  "           ANSA/RAI/BBC/ALJAZEERA...\r"
+  " SLIDESHOW KOALA OR PETSCII ART\r"
+  "           SPACE EXITS\r"
+  "\x9e"
+  " SID       LOAD A SID FROM SD FIRST\r"
+  "           THEN NEWS/SLIDES CAN USE IT\r"
+  " SD: /PETSCII-ART (.D64)\r"
+  "     /PETSCII-SEQ (.SEQ)\r"
+  "\x9f"
+  " UP/DOWN SELECT - RETURN ENTER\r"
+  " PRESS A KEY TO RETURN TO MENU\r";
+
 void buildKoalaList() {
+  // Se la directory e' gia' stata scandita da buildDirectoryList(), la lista
+  // e' pronta: evitiamo una seconda lettura della SD (causava 10-20 s di
+  // attesa prima della prima immagine dello slideshow).
+  if (koalaListDir == currentDir) {
+    Serial.printf("Koala list: %u file (gia' pronta)\n",
+                  (unsigned)koalaList.size());
+    return;
+  }
+
   koalaList.clear();
 
   File dir = SD.open(currentDir);
@@ -1749,6 +2053,7 @@ void buildKoalaList() {
     }
     dir.close();
   }
+  koalaListDir = currentDir;
 
   // Cache testuale nella directory corrente. Il C64 non la mostra.
   String cachePath = makePath(currentDir, "koalist.txt");
@@ -1770,6 +2075,14 @@ bool isKoalaName(const String &name) {
   String suffix = name.substring(len - 4);
   suffix.toLowerCase();
   return suffix == ".kla" || suffix == ".koa";
+}
+
+bool isSidName(const String &name) {
+  int len = name.length();
+  if (len < 4) return false;
+  String suffix = name.substring(len - 4);
+  suffix.toLowerCase();
+  return suffix == ".sid";
 }
 
 void sendZeroBlock() {
@@ -1865,30 +2178,53 @@ void loop() {
      break;}
      
      //========================================================
-     case 52:{   //52 = Get time & weather
+     case 52:{   // 52 = clock/weather screen template a $A000
+        getTime();
+        getWeatherData();
+        Serial.println(currentDate);
+        buildWeatherScreen();
+        sendScreenTemplate(0xA0);
+        break;}
 
-    getTime();
-    getWeatherData();
-    currentDate += weatherString;
+    //========================================================
+      case 64:{          // 64 = main menu template a $9800
+        buildMenuScreen();
+        sendScreenTemplate(0x98);
+        break;}
 
-  Serial.println(currentDate);
-   
-    outbuffersize = currentDate.length();
-  
-    sendByte((byte)(outbuffersize));
-    sendByte((byte)(outbuffersize>>8));
-    sendByte(0x00);
-    sendByte(0x10); 
-    
-    for (int x = 0; x < outbuffersize; x++) {
-          sendByte(asciiToPET(currentDate[x]));}
-    
-     break;}
+    //========================================================
+      case 65:{          // 65 = news source screen a $A000
+        buildNewsSourceScreen();
+        sendScreenTemplate(0xA0);
+        break;}
+
+    //========================================================
+      case 66:{          // 66 = directory border screen a $A000
+        buildFrameScreen();
+        sendScreenTemplate(0xA0);
+        break;}
+
+    //========================================================
+      case 67:{          // 67 = NEWS background screen a $A000
+        buildNewsBackgroundScreen();
+        sendScreenTemplate(0xA0);
+        break;}
+
+    //========================================================
+      case 63:{          // 63 = pagina HELP (stream PETSCII a $A000)
+        unsigned int helpLen = sizeof(helpText) - 1;
+        sendByte((byte)helpLen);
+        sendByte((byte)(helpLen >> 8));
+        sendByte(0x00);
+        sendByte(0xA0);
+        for (unsigned int i = 0; i < helpLen; i++) sendByte(helpText[i]);
+        break;}
 
     //========================================================
       case 62:{          // 62 = reset slideshow Koala
         buildKoalaList();
         slideshowIndex = 0;
+        koalaCurrent = 0;
         sendZeroBlock();
         break;}
 
@@ -1900,6 +2236,7 @@ void loop() {
           break;
         }
 
+        koalaCurrent = slideshowIndex;
         String targetName = koalaList[slideshowIndex];
         strncpy(inbuffer, targetName.c_str(), sizeof(inbuffer) - 1);
         inbuffer[sizeof(inbuffer) - 1] = 0;
@@ -1911,7 +2248,8 @@ void loop() {
 
     //========================================================
       case 53:{          // 53 = file from ESP32 to c64
-      
+      sidFile:
+      sendFile:
       if (strcmp(inbuffer, "/..") == 0) {
         enterParentDirectory();
         buildDirectoryList();
@@ -2009,6 +2347,7 @@ void loop() {
     }
 
     else{
+    currentSidName = inbuffer;
     uint32_t sidFileSize = dataFile.size();
 
     for (int i = 0; i < 0x7c && dataFile.available(); i++) {
@@ -2076,6 +2415,7 @@ void loop() {
           if (SID_load_start <= 0x8710 && sidEnd >= 0x6000) sid_conflicts |= 0x08; // sorgente Koala
           if (SID_load_start <= 0xBFFF && sidEnd >= 0x8800) sid_conflicts |= 0x10; // NEWS + grafica + SEQ
           if (SID_load_start <= 0xCFFF && sidEnd >= 0xC000) sid_conflicts |= 0x20; // codice
+          if (SID_load_start <= 0x9FCF && sidEnd >= 0x9800) sid_conflicts |= 0x40; // menu template
           Serial.printf("SID range: $%04X-$%04X, conflict mask: %02X\n",
                         SID_load_start, (unsigned)(sidEnd & 0xFFFF), sid_conflicts);
 
@@ -2106,6 +2446,52 @@ void loop() {
       break;}
 
    //========================================================
+    case 54: {          // 54 = Koala precedente
+      if (koalaList.empty()) {
+        sendZeroBlock();
+        break;
+      }
+      int n = (int)koalaList.size();
+      int cur = koalaCurrent;
+      if (cur < 0 || cur >= n) cur = 0;
+      cur = (cur <= 0) ? n - 1 : cur - 1;
+      koalaCurrent = cur;
+      slideshowIndex = (cur + 1) % n;
+      String targetName = koalaList[cur];
+      strncpy(inbuffer, targetName.c_str(), sizeof(inbuffer) - 1);
+      inbuffer[sizeof(inbuffer) - 1] = 0;
+      IS_SID_FILE = false;
+      IS_KOALA_FILE = true;
+      goto sendFile;
+    }
+
+   //========================================================
+    case 68:
+    case 69: {          // 68 = next SID, 69 = previous SID
+      if (sidList.empty()) {
+        sendZeroBlock();
+        break;
+      }
+      int idx = -1;
+      for (int i = 0; i < (int)sidList.size(); i++) {
+        if (sidList[i].equalsIgnoreCase(currentSidName)) { idx = i; break; }
+      }
+      if (idx < 0) {
+        idx = (ch == 68) ? 0 : (int)sidList.size() - 1;
+      } else if (ch == 68) {
+        idx = (idx + 1) % (int)sidList.size();
+      } else {
+        idx = (idx + (int)sidList.size() - 1) % (int)sidList.size();
+      }
+      currentSidName = sidList[idx];
+      strncpy(inbuffer, currentSidName.c_str(), sizeof(inbuffer) - 1);
+      inbuffer[sizeof(inbuffer) - 1] = 0;
+      IS_SID_FILE = true;
+      IS_KOALA_FILE = false;
+      goto sidFile;
+    }
+
+   //========================================================
      case 55:{   //55 = send SID file to c64
     
    
@@ -2124,20 +2510,10 @@ void loop() {
    
      break;}
     //========================================================
-     case 56:{   //56 = print SID info
+     case 56:{   //56 = schermata SID player a $A000
 
-    outbuffersize = strlen(info_string_SID);
-  
-    sendByte((byte)(outbuffersize));
-    sendByte((byte)(outbuffersize>>8));
-    sendByte(0x00);
-    sendByte(0x10);
-
-    String text_lowcase = info_string_SID;
-    //text_lowcase.toLowerCase();
-    
-    for (int x = 0; x < outbuffersize; x++) {
-          sendByte(asciiToPET(text_lowcase[x]));}
+    buildSidScreen();
+    sendScreenTemplate(0xA0);
     
      break;}
 
@@ -2171,8 +2547,8 @@ void loop() {
       Serial.printf("NEWS: fonte %d '%s'\n", newsSourceIndex, src.name);
 
       if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("NEWS: WiFi non connesso");
-        sendScrollerMessage("wifi non connesso");
+        Serial.println("NEWS: WiFi not connected");
+        sendScrollerMessage("wifi not connected");
         break;
       }
 
@@ -2182,7 +2558,7 @@ void loop() {
 
       String newsText = utf8ToScrollerAscii(headlines);
       if (newsText.length() > 2000) newsText.remove(2000);
-      if (newsText.length() == 0) newsText = "nessuna notizia disponibile";
+      if (newsText.length() == 0) newsText = "no news available";
 
       Serial.print("NEWS: testo: ");
       Serial.println(newsText);
@@ -2231,6 +2607,12 @@ void loop() {
         sendByte(0x03);
         sendByte((byte)(prgEntry));
         sendByte((byte)(prgEntry >> 8));
+        break;}
+
+    //========================================================
+      case 112:{        // 112 = bootstrap: EXROM alto (EPROM $8000 off)
+        digitalWrite(CLED, LOW);
+        sendZeroBlock();
         break;}
 
     //========================================================

@@ -18,6 +18,20 @@ Feaures:
 - show news by using 2x2 charset
 
   Video to show the cart in action: https://www.youtube.com/watch?v=Q0KYe2STK2w
+
+## EPROM 8K bootstrap
+
+L'EPROM puo' contenere solo un piccolo bootstrap invece di tutto il menu:
+
+```bash
+acme bootstrap.asm
+# -> c64esp8kBOOT.bin (8192 byte)
+```
+
+Il bootstrap copia un loader a `$C000`, invia il comando ESP32 `112` per alzare
+EXROM (GPIO2/CLED tramite transistor), carica `espnewsauto.prg` dalla root della
+SD dell'ESP32 a `$0801` e salta all'entry point. Il menu completo puo' quindi
+essere aggiornato sulla SD senza riprogrammare la 27C512.
   
 Any help is appreciate,
 Have fun!

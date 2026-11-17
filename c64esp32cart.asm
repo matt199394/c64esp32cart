@@ -55,6 +55,7 @@ screenRam       = $0400
 cassette_buffer = $033c
 
 CODE_BASE = $c000           ; il codice gira in RAM da qui (max fino a $cfff)
+MENU_TEMPLATE = $9800       ; screen+colori del menu (2000 byte), area libera
 
 ; Koala: bitmap 8000 byte, poi matrice video 1000, colori 1000, sfondo 1
 PICTURE    = $6000
@@ -240,60 +241,60 @@ main_init
 !zone restart
 restart
         jsr set_default_irq
-        lda #$37
-        sta $01                             ; BASIC/Kernal/I-O sempre attivi nel menu
+        lda #$36                            ; BASIC ROM spenta: $A000-$BFFF e' RAM
+        sta $01                             ; il menu puo' usare la RAM sotto la ROM BASIC
+        lda $dd00
+        and #$fc
+        ora #$03                            ; VIC bank 0
+        sta $dd00
         lda #1
         sta $cc                             ; cursore KERNAL spento nel menu
         lda #0
         sta cassette_buffer                 ; 0 = ultimo file ricevuto non e' un SID
-        lda #11
-        sta $d021
-        lda #15
-        sta $d020
+        lda #0
+        sta $d021                           ; sfondo nero
+        lda #14
+        sta $d020                           ; bordo azzurro
+        lda #0
+        sta menu_mode                       ; 0 = main menu
+        lda #8
+        sta menu_max
+        lda #0
+        sta news_bg
         lda #1
-        sta 646                             ; colore carattere
+        sta 646                             ; colore carattere bianco
         lda #0
         ldx #24
 .clr    sta $d400,x                         ; azzera SID (ora anche $d400)
         dex
         bpl .clr
-        jsr $e544                           ; clear screen
+        lda #$1b
+        sta $d011                           ; text mode, 25 rows
         lda #23
         sta $d018                           ; minuscolo
+        lda #$c8
+        sta $d016                           ; 40 colonne, no scroll
+!ifdef CART {
+        jsr menu_prepare                    ; screen+colori ricevuti dall'ESP32
+} else {
         ldx #<menu_text
         ldy #>menu_text
         jsr print_z
+}
+        jsr menu_nav_init
 
 main_loop
         jsr getin
         beq main_loop
-        cmp #'1'
+        cmp #17                             ; cursore giu'
         bne +
-        jmp directory
-+       cmp #'2'
+        jmp menu_down
++       cmp #145                            ; cursore su
         bne +
-        jmp do_supermon
-+       cmp #'3'
-        bne +
-        jmp do_message
-+       cmp #'4'
-        bne +
-        jmp do_weather
-+       cmp #'5'
-        bne +
-        jmp run_prg
-+       cmp #'6'
-        bne +
-        jmp do_koala
-+       cmp #'7'
-        bne +
-        jmp do_news
-+       cmp #'8'
-        bne +
-        jmp do_slideshow
-+       cmp #'9'
+        jmp menu_up
++       cmp #13                             ; invio
         bne main_loop
-        jmp do_seq_slideshow
+        jmp menu_enter
 
 ; ---------------------------------------------------------------------------
 ;  Voci di menu semplici
@@ -305,10 +306,7 @@ do_supermon
 !ifdef CART {
         jsr receive_buffer
         jsr wait_rx
-        sei
-        lda #$36                            ; BASIC ROM spenta: Supermon+ sta in RAM $a000
-        sta $01
-        cli
+        jsr $e544                           ; pulisce le scritte del menu
         jmp $a000
 } else {
         ldx #<msg_nocart
@@ -317,41 +315,194 @@ do_supermon
         jmp restart
 }
 
-!zone do_message
-do_message
-        ldx #0                              ; rimette il testo di prova (TXBUFFER
-.cp     lda test_msg,x                      ; puo' contenere l'ultimo nome file)
-        sta TXBUFFER,x
-        inx
-        cpx #test_msg_end - test_msg
-        bne .cp
-        lda #51
+!zone do_help
+do_help
+!ifdef CART {
+        lda #63                             ; HELP: stream PETSCII a $A000
         sta OPTION
-        jsr sound
-        jsr delay
-        jsr send_buffer
-!ifndef CART {
-        ldx #<msg_sent
-        ldy #>msg_sent
-        jsr show_msg
-}
+        jsr receive_buffer
+        jsr wait_rx_long
+        lda SIZE+3
+        cmp #$a0
+        beq .show
+        jmp restart                        ; HELP not available
+.show   jsr show_seq                        ; print the stream with CHROUT
+.wait   jsr getin
+        beq .wait
         jmp restart
+} else {
+        ldx #<msg_nocart
+        ldy #>msg_nocart
+        jsr show_msg
+        jmp restart
+}
 
-!zone do_weather
-do_weather
+; ---------------------------------------------------------------------------
+;  Grafic menu: template received from ESP32, arrow-key navigation
+; ---------------------------------------------------------------------------
+!ifdef CART {
+!zone menu_template
+menu_prepare
+        lda menu_ready
+        bne .show
+        inc menu_ready
+        lda #64                             ; menu screen+colors -> $9800
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+
+.show   lda #<MENU_TEMPLATE                ; screen template -> $0400
+        sta ptr1
+        lda #>MENU_TEMPLATE
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$04
+        sta ptr2+1
+        jsr copy920
+
+        lda #<(MENU_TEMPLATE+1000)          ; colors template -> $D800
+        sta ptr1
+        lda #>(MENU_TEMPLATE+1000)
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$d8
+        sta ptr2+1
+        jmp copy920
+}
+
+!ifdef CART {
+!zone a000template
+show_a000_template
+        lda #<$a000
+        sta ptr1
+        lda #>$a000
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$04
+        sta ptr2+1
+        jsr copy920
+
+        lda #<($a000+1000)
+        sta ptr1
+        lda #>($a000+1000)
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$d8
+        sta ptr2+1
+        jmp copy920
+
+load_weather_template
         lda #52
         sta OPTION
         jsr receive_buffer
         jsr wait_rx_long
-        jsr $e544
-        jsr print_text
-        jsr sound
-        jsr setTOD
-.wait   jsr getin
-        cmp #32
-        bne .wait
+        lda #$14                            ; charset ROM maiuscolo ($1000)
+        sta $d018
+        jmp show_a000_template
+}
+
+!zone dir_show
+dir_show
+!ifdef CART {
+        lda ptr1
+        pha
+        lda ptr1+1
+        pha
+        jsr show_a000_template
+        pla
+        sta ptr1+1
+        pla
+        sta ptr1
+        ldx #1                              ; PLOT: X=riga, Y=colonna (0-based)
+        ldy #2
+        clc
+        jmp $fff0                           ; riga 1, colonna 2
+} else {
+        jmp $e544
+}
+
+!zone menunav
+menu_nav_init
+        jsr pointer_line_0
+        jsr flash_line_0
+        ldx #6                             ; first menu entry: row 6
+.l      jsr inc_pointer_line
+        jsr inc_flash_line
+        dex
+        bne .l
+        jsr set_irq_color                   ; same colour wash as the directory
+        rts
+
+menu_up
+        lda HOME_LINE
+        beq .doneup
         jsr set_default_irq
+        jsr reset_default_color
+        dec HOME_LINE
+        jsr dec_flash_line
+        jsr dec_pointer_line
+        jsr set_irq_color
+.doneup jmp main_loop
+
+menu_down
+        lda HOME_LINE
+        cmp menu_max
+        bcs .donedn
+        jsr set_default_irq
+        jsr reset_default_color
+        inc HOME_LINE
+        jsr inc_flash_line
+        jsr inc_pointer_line
+        jsr set_irq_color
+.donedn jmp main_loop
+
+menu_enter
+        jsr set_default_irq
+        lda menu_mode
+        beq .main
+        cmp #1
+        beq .news
+        ; mode 2: scelta dello sfondo NEWS
+        lda HOME_LINE
+        sta news_bg
+        jsr ask_sid
+        jsr news
         jmp restart
+.news   lda HOME_LINE
+        sta news_source
+        jsr bg_menu
+        jmp main_loop
+.main   lda HOME_LINE
+        asl
+        tax
+        lda menu_actions,x
+        sta ptr1
+        lda menu_actions+1,x
+        sta ptr1+1
+        jmp (ptr1)
+
+menu_actions
+        !word directory, do_supermon, do_help, do_weather, run_prg
+        !word do_koala, do_news, do_slideshow, do_seq_slideshow
+
+!zone do_weather
+do_weather
+        jsr load_weather_template
+.loop   lda #15
+        sta weather_wait
+.slice  jsr delay
+        jsr getin
+        cmp #32
+        beq .done
+        dec weather_wait
+        bne .slice
+        jsr load_weather_template
+        jmp .loop
+.done   jmp restart
 
 !zone do_koala
 do_koala
@@ -361,35 +512,59 @@ do_koala
         ldy #>msg_nokoala
         jsr show_msg
         jmp restart
-.show   jsr koala
+.show   jsr koala_once
         jmp restart
+
+!zone ask_sid
+ask_sid
+        lda sid_loaded
+        beq .nosid
+        ldx #<msg_sid
+        ldy #>msg_sid
+        jsr show_msg
+        ora #$20                            ; accetta Y/y e N/n
+        cmp #'n'
+        beq .nosid
+        lda #1
+        sta sid_choice
+        rts
+.nosid  lda #0
+        sta sid_choice
+        rts
 
 !zone do_news
 do_news
 !ifdef CART {
-        jsr $e544
-        ldx #<news_menu
-        ldy #>news_menu
-        jsr print_z
-.pick   jsr getin
-        beq .pick
-        cmp #'0'
-        bne .notzero
+        lda #65                             ; news source screen from ESP32
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        jsr show_a000_template
         lda #9
-        bne .go
-.notzero sec
-        sbc #'1'
-        cmp #10
-        bcs .pick
-.go     sta news_source
-        jsr news
-        jmp restart
+        sta menu_max
+        lda #1
+        sta menu_mode
+        jsr menu_nav_init
+        jmp main_loop
 } else {
         ldx #<msg_nocart
         ldy #>msg_nocart
         jsr show_msg
-}
         jmp restart
+}
+
+!zone news_bg_menu
+bg_menu
+        lda #67                             ; schermata scelta sfondo NEWS
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        jsr show_a000_template
+        lda #2
+        sta menu_max
+        sta menu_mode
+        jsr menu_nav_init
+        rts
 
 ; ---------------------------------------------------------------------------
 ;  Slideshow dei Koala nella directory corrente
@@ -397,6 +572,10 @@ do_news
 !zone do_slideshow
 do_slideshow
 !ifdef CART {
+        jsr ask_sid
+        jsr clear_screen_text
+        lda #$2d                            ; mask for the Koala slideshow
+        sta sid_mask
         lda #62
         sta OPTION
         jsr receive_buffer
@@ -404,7 +583,9 @@ do_slideshow
         lda #0
         sta slideshow_sid_started
 .next   lda #61
-        sta OPTION
+        jmp .load
+.prev   lda #54
+.load   sta OPTION
         lda #1
         sta sid_paused                      ; ferma il play durante NMI
         jsr receive_buffer
@@ -415,7 +596,10 @@ do_slideshow
         lda SIZE+2
         bne .end
         jsr koala_slide
-        bcs .end
+        cmp #32
+        beq .end
+        cmp #133
+        beq .prev
         jmp .next
 .end    jsr slideshow_sid_stop
         jmp restart
@@ -432,9 +616,17 @@ do_slideshow
 !zone do_seq
 do_seq_slideshow
 !ifdef CART {
+        jsr ask_sid
         jsr clear_screen_text
+        lda #$3d                            ; SID must not touch SEQ staging
+        sta sid_mask
+        jsr slideshow_sid_start
+        lda #1
+        sta sid_paused
         lda #89
         jsr load_art_cmd
+        lda #0
+        sta sid_paused
 .loop   lda $a2
         sta seq_t0
 .wait   jsr getin
@@ -451,13 +643,22 @@ do_seq_slideshow
         sbc seq_t0
         cmp #250
         bcc .wait
-.next   lda #87
+.next   lda #1
+        sta sid_paused
+        lda #87
         jsr load_art_cmd
+        lda #0
+        sta sid_paused
         jmp .loop
-.prev   lda #88
+.prev   lda #1
+        sta sid_paused
+        lda #88
         jsr load_art_cmd
+        lda #0
+        sta sid_paused
         jmp .loop
-.done   jmp restart
+.done   jsr slideshow_sid_stop
+        jmp restart
 } else {
         ldx #<msg_nocart
         ldy #>msg_nocart
@@ -474,8 +675,10 @@ slideshow_sid_start
         sta sid_bg_active
         lda sid_loaded
         beq .nosid
+        lda sid_choice
+        beq .nosid
         lda sid_conflict
-        and #$2D                            ; screen+bitmap+sorgente Koala+codice
+        and sid_mask                        ; aree da non sovrascrivere
         bne .nosid                           ; SID non compatibile con lo slideshow
         jsr sid_set_calls
         sei
@@ -549,7 +752,14 @@ directory
         sta dir_size
         lda SIZE+1
         sta dir_size+1
-.first  jsr $e544                           ; (F1 ora pulisce lo schermo)
+.first
+!ifdef CART {
+        lda #66                             ; border screen -> $A000
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+}
+        jsr dir_show
         lda dir_start
         sta ptr1
         lda dir_start+1
@@ -580,20 +790,28 @@ directory
         bne .print
         inc line_count
         lda line_count
-        cmp #24
+        cmp #22
+        bcs .nospace
+        lda #29                             ; il CR torna al margine: due cursor-right
+        jsr basout
+        jsr basout
+.nospace
+        lda line_count
+        cmp #22
         bcc .print                          ; pagina piena: si ferma qui
 
 .menu   jsr flash_line_0
         jsr pointer_line_0
+        jsr inc_flash_line
+        jsr inc_pointer_line
         jsr set_irq_color
 .key    jsr getin
         beq .key
         cmp #133                            ; F1: pagina precedente
         bne .f7
         jsr set_default_irq
-        jsr reset_default_color
         jsr page_up
-        jsr $e544
+        jsr dir_show
         jmp .page
 .f7     cmp #136                            ; F7: pagina successiva
         bne .down
@@ -601,14 +819,13 @@ directory
         ora dir_left+1
         beq .key                            ; non c'e' altro
         jsr set_default_irq
-        jsr reset_default_color
-        jsr $e544
+        jsr dir_show
         jmp .page
 .down   cmp #17                             ; cursore giu'
         bne .up
         inc HOME_LINE
         lda HOME_LINE
-        cmp #25
+        cmp #22
         bcc .okd
         jsr pointer_line_24
         jsr flash_line_24
@@ -626,6 +843,8 @@ directory
         bpl .oku
         jsr pointer_line_0
         jsr flash_line_0
+        jsr inc_pointer_line
+        jsr inc_flash_line
         jmp .key
 .oku    jsr set_default_irq
         jsr reset_default_color
@@ -635,14 +854,11 @@ directory
         jmp .key
 .quit   cmp #81                             ; 'q'
         bne .ret
-        jsr set_default_irq
-        jsr reset_default_color
         jmp restart
 .ret    cmp #13                             ; invio: carica il file
         beq .load
         jmp .key
 .load   jsr set_default_irq
-        jsr reset_default_color
         jsr read_from_screen
         bne .go
         jsr set_irq_color                   ; riga vuota: ignora
@@ -650,11 +866,11 @@ directory
 .go     lda #51                             ; invia il nome file / directory
         sta OPTION
         jsr send_buffer
-        jsr delay
         lda TXBUFFER
         cmp #47                             ; '/' = voce di directory
-        beq .newdir
-        lda #53                             ; ricevi il file
+        bne .notdir
+        jmp .newdir
+.notdir lda #53                             ; ricevi il file
         sta OPTION
         jsr receive_buffer
         jsr wait_rx_long
@@ -673,7 +889,11 @@ directory
         sta sid_play_hi
         lda cassette_buffer+5
         sta sid_conflict
-        lda #1
+        and #$40                            ; SID sopra il menu template?
+        beq .sidok
+        lda #0
+        sta menu_ready
+.sidok  lda #1
         sta sid_loaded
         jmp restart
 .prg    lda #0
@@ -685,7 +905,7 @@ directory
         bne .runprg
         lda #1
         sta koala_ok
-        jsr koala                           ; mostra subito l'immagine caricata
+        jsr koala_once                      ; mostra subito l'immagine caricata
         jmp restart
 
 .runprg lda #0
@@ -697,6 +917,12 @@ directory
         lda PRG_ENTRY
         ora PRG_ENTRY+1
         beq .done                           ; entry = 0: torna al menu
+        lda #$37                            ; BASIC/Kernal/I-O per il PRG caricato
+        sta $01
+        jsr $a659                           ; CLR
+        jsr $a533                           ; rilega le righe BASIC
+        lda #0
+        sta $cc
         jmp (PRG_ENTRY)
 .done   jmp restart
 
@@ -711,54 +937,34 @@ directory
 ; ---------------------------------------------------------------------------
 !zone dirpage
 page_up
-        lda dir_start
-        sta ptr2
-        sta page_scan
-        lda dir_start+1
-        sta ptr2+1
-        sta page_scan+1
-        lda #0
-        sta line_count
-
-.loop   lda ptr2
-        cmp page_start
-        lda ptr2+1
-        sbc page_start+1
-        bcs .found
-
-        ldy #0
-        lda (ptr2),y
-        +inc16 ptr2
-        cmp #13
-        bne .loop
-
-        inc line_count
-        lda line_count
-        cmp #24
-        bcc .loop
-
-        ; confine di pagina: se siamo arrivati all'inizio della pagina
-        ; corrente, page_scan e' gia' la pagina precedente.
-        lda ptr2
-        cmp page_start
-        lda ptr2+1
-        sbc page_start+1
-        bcs .found
-
-        lda ptr2
-        sta page_scan
-        lda ptr2+1
-        sta page_scan+1
-        lda #0
-        sta line_count
-        jmp .loop
-
-.found  lda page_scan
+        lda page_start
         sta ptr1
-        lda page_scan+1
+        lda page_start+1
         sta ptr1+1
-
-        ; dir_left = dir_size - (ptr1 - dir_start)
+        ldx #0
+.back   lda ptr1
+        cmp dir_start
+        bne .notstart
+        lda ptr1+1
+        cmp dir_start+1
+        beq .atstart
+.notstart
+        +dec16 ptr1
+        ldy #0
+        lda (ptr1),y
+        cmp #13
+        bne .back
+        inx
+        cpx #22
+        bne .back
+        +inc16 ptr1
+        jmp .found
+.atstart
+        lda dir_start
+        sta ptr1
+        lda dir_start+1
+        sta ptr1+1
+.found
         sec
         lda ptr1
         sbc dir_start
@@ -815,7 +1021,7 @@ flash_line_24
         lda #$db
         sta cw_sta+2
         sta cr_sta+2
-        lda #$c0
+        lda #$70
         sta cw_sta+1
         sta cr_sta+1
         rts
@@ -855,9 +1061,9 @@ pointer_line_0
 pointer_line_24
         lda #$07
         sta ptr2+1
-        lda #$c0
+        lda #$70
         sta ptr2
-        lda #24
+        lda #22
         sta HOME_LINE
         rts
 
@@ -892,10 +1098,11 @@ colwash
         sta colourdelay
         ldx tmp
         lda colour,x
-        ldy #39
+        ldy #38                             ; non toccare i bordi (col 0 e 39)
 cw_sta  sta $d800,y                         ; operando modificato da flash_line_*
         dey
-        bpl cw_sta
+        cpy #1
+        bcs cw_sta
         inx
         cpx #13
         bne .keep
@@ -905,10 +1112,11 @@ cw_sta  sta $d800,y                         ; operando modificato da flash_line_
 
 reset_default_color
         lda CHAR_COLOR
-        ldy #39
+        ldy #38                             ; non toccare i bordi (col 0 e 39)
 cr_sta  sta $d800,y                         ; operando modificato da flash_line_*
         dey
-        bpl cr_sta
+        cpy #1
+        bcs cr_sta
         rts
 
 ; copia in TXBUFFER il nome file sotto il cursore (codici schermo).
@@ -916,7 +1124,7 @@ cr_sta  sta $d800,y                         ; operando modificato da flash_line_
 ; Ritorna A = lunghezza, Z=1 se riga vuota.
 !zone read_from_screen
 read_from_screen
-        ldy #0
+        ldy #2                              ; dentro il bordo (2 colonne)
 .find   cpy #40
         bcs .copy
         lda (ptr2),y
@@ -933,17 +1141,19 @@ read_from_screen
         bne .find
 .copy   sty name_len
         ldx #0
-.cl     cpx name_len
+        ldy #2
+.cl     cpy name_len
         beq .end
-        txa
-        tay
         lda (ptr2),y
         sta TXBUFFER,x
         inx
+        iny
         bne .cl
 .end    lda #128
         sta TXBUFFER,x
         lda name_len
+        sec
+        sbc #2
         rts
 
 ; ---------------------------------------------------------------------------
@@ -973,27 +1183,6 @@ show_msg
 .w      jsr getin
         beq .w
         rts
-
-; stampa il blocco ricevuto (start SIZE+2/3, lunghezza SIZE/SIZE+1)
-print_text
-        lda SIZE+2
-        sta ptr1
-        lda SIZE+3
-        sta ptr1+1
-        lda SIZE
-        sta cnt
-        lda SIZE+1
-        sta cnt+1
-.pl     lda cnt
-        ora cnt+1
-        beq .pe
-        ldy #0
-        lda (ptr1),y
-        jsr basout
-        +inc16 ptr1
-        +dec16 cnt
-        jmp .pl
-.pe     rts
 
 ; ---------------------------------------------------------------------------
 ;  Attese
@@ -1052,35 +1241,12 @@ delay
         rts
 
 ; ---------------------------------------------------------------------------
-;  Suono
-; ---------------------------------------------------------------------------
-!zone sound
-sound
-        lda #0
-        sta $d400
-        sta $d407
-        lda #143
-        sta $d418
-        lda PITCH
-        sta $d401
-        sta $d408
-        lda #15
-        sta $d405
-        sta $d40c
-        lda #249
-        sta $d406
-        sta $d40d
-        lda #17
-        sta $d404
-        lda #16
-        sta $d404
-        rts
-
-; ---------------------------------------------------------------------------
 ;  BASIC: riaggancia le righe e torna al prompt (poi RUN)
 ; ---------------------------------------------------------------------------
 !zone run_prg
 run_prg
+        lda #$37                            ; BASIC/Kernal/I-O per il ritorno a BASIC
+        sta $01
         lda #0
         sta $cc                             ; cursore normale in BASIC
         jsr $a659                           ; CLR
@@ -1091,156 +1257,7 @@ run_prg
 ; ---------------------------------------------------------------------------
 ;  Ora (TOD del CIA1) dalla prima riga di testo "xxxxx: HH:MM:SS"
 ; ---------------------------------------------------------------------------
-!zone tod
-scr2bcd                                     ; X = offset sullo schermo -> A = BCD
-        lda screenRam,x
-        asl
-        asl
-        asl
-        asl
-        sta bcd_tmp
-        lda screenRam+1,x
-        and #$0f
-        ora bcd_tmp
-        rts
-
-bcd_ok                                      ; C=1 se non e' BCD valido
-        tay
-        and #$0f
-        cmp #$0a
-        bcs .bad
-        tya
-        lsr
-        lsr
-        lsr
-        lsr
-        cmp #$0a
-        rts
-.bad    sec
-        rts
-
-setTOD
-        ldx #6
-        jsr scr2bcd
-        sta second+2
-        jsr bcd_ok
-        bcs .skip
-        ldx #9
-        jsr scr2bcd
-        sta second+1
-        jsr bcd_ok
-        bcs .skip
-        ldx #12
-        jsr scr2bcd
-        sta second
-        jsr bcd_ok
-        bcs .skip
-
-        lda second+2                        ; 24h -> formato CIA (12h + bit PM)
-        beq .midnight                       ; 00 -> 12 AM
-        cmp #$12
-        beq .noon                           ; 12 -> 12 PM
-        bcc .hset                           ; 01..11 AM
-        sed
-        sec
-        sbc #$12                            ; 13..23 -> 01..11 PM
-        cld
-        ora #$80
-        bne .hset
-.midnight
-        lda #$12
-        bne .hset
-.noon   lda #$92
-.hset   sta second+2
-
-        lda cia1+15                         ; CRB bit7=0: le scritture regolano l'ora
-        and #$7f
-        sta cia1+15
-        lda cia1+14                         ; CRA bit7=1: rete a 50 Hz
-        ora #$80
-        sta cia1+14
-        lda second+2
-        sta cia1+11                         ; ore (ferma il clock)
-        lda second+1
-        sta cia1+10
-        lda second
-        sta cia1+9
-        lda #0
-        sta cia1+8                          ; decimi (riavvia il clock)
-
-        lda #15
-        sta toggle
-        sei
-        lda #<update
-        sta $0314
-        lda #>update
-        sta $0315
-        cli
-.skip   rts
-
-; IRQ: ogni 15 interrupt rilegge il TOD e aggiorna le cifre sullo schermo.
-; (nell'originale c'era un CLI dentro l'IRQ: qui non serve)
-update
-        dec toggle
-        beq .go
-        jmp $ea31
-.go     lda #15
-        sta toggle
-        lda cia1+11                         ; ore per prime: blocca la lettura
-        sta second+2
-        lda cia1+10
-        sta second+1
-        lda cia1+9
-        sta second
-        lda cia1+8                          ; decimi: sblocca
-        cmp #5
-        bcs .noblink
-        lda #':'
-        bne .colon
-.noblink
-        lda #32
-.colon  sta screenRam+8
-        sta screenRam+11
-        lda second+2                        ; 12h -> 24h
-        bmi .pm
-        cmp #$12
-        bne .store
-        lda #0                              ; 12 AM -> 00
-        beq .store
-.pm     and #$1f
-        cmp #$12
-        beq .store                          ; 12 PM -> 12
-        sed
-        clc
-        adc #$12
-        cld
-.store  sta second+2
-        ldx #6
-        lda second+2
-        jsr put_bcd
-        ldx #9
-        lda second+1
-        jsr put_bcd
-        ldx #12
-        lda second
-        jsr put_bcd
-        jmp $ea31
-
-put_bcd                                     ; A = BCD, X = offset sullo schermo
-        pha
-        lsr
-        lsr
-        lsr
-        lsr
-        ora #$30
-        sta screenRam,x
-        pla
-        and #$0f
-        ora #$30
-        sta screenRam+1,x
-        rts
-
-; ---------------------------------------------------------------------------
+!zone tod; ---------------------------------------------------------------------------
 ;  Immagine Koala (caricata dalla SD a $6000)
 ; ---------------------------------------------------------------------------
 !zone koala
@@ -1300,36 +1317,11 @@ koala_prepare
         sta $01                 ; ripristina la configurazione normale
         rts
 
-; mostra il bitmap multicolor e aspetta SPACE
-koala
-        jsr koala_prepare
-
-        ; configura il VIC II per il bitmap multicolor
+; mostra l'immagine Koala caricata riusando lo slideshow, senza SID
+koala_once
         lda #1
-        sta $cc                             ; cursore spento
-        lda $dd00
-        and #$fc
-        ora #$03                            ; VIC bank 0
-        sta $dd00
-        lda #$3b
-        sta $d011                           ; bitmap mode, DEN, RSEL
-        lda #$18
-        sta $d018                           ; screen $0400, bitmap $2000
-        sta $d016                           ; multicolor, 40 colonne
-
-.hold   jsr getin
-        cmp #32
-        bne .hold
-
-        ; ripristina la modalita' testo del menu
-        lda #$1b
-        sta $d011
-        lda #$17
-        sta $d018
-        lda #$c8
-        sta $d016
-        lda #0
-        sta $cc
+        sta slideshow_sid_started
+        jsr koala_slide
         rts
 
 ; ---------------------------------------------------------------------------
@@ -1363,28 +1355,35 @@ koala_slide
 .slide  jsr getin
         cmp #32
         beq .exit
+        cmp #136
+        beq .exit
+        cmp #133
+        beq .exit
         lda $a2
         sec
         sbc wait_t0
         cmp #250                            ; circa 4 secondi
         bcc .slide
-
-        jsr slide_text_mode
-        clc
-        rts
-
-.exit   jsr slide_text_mode
-        sec
+        lda #0
+        sta sid_cmd
+        jmp .done
+.exit   sta sid_cmd
+.done   jsr slide_text_mode
+        lda sid_cmd
         rts
 
 slide_text_mode
+!ifdef CART {
+        jsr clear_screen_text               ; blank/black screen between slides
+} else {
         lda #$1b
         sta $d011
         lda #$17
         sta $d018
         lda #$c8
         sta $d016
-        lda #0
+}
+        lda #1                              ; cursore spento anche nello schermo nero
         sta $cc
         rts
 
@@ -1393,6 +1392,7 @@ slide_text_mode
 ; ---------------------------------------------------------------------------
 !zone sid
 play_SID
+.reload
         lda cassette_buffer+1
         sta SID_init+1
         lda cassette_buffer+2
@@ -1408,12 +1408,13 @@ play_SID
         lda #>no_play
         sta SID_play+2
 .hasplay
-        lda #56                             ; testo informativo
+        lda #56                             ; schermata SID player
         sta OPTION
         jsr receive_buffer
         jsr wait_rx
-        jsr $e544
-        jsr print_text
+        lda #$36                            ; $A000 = RAM per leggere il template
+        sta $01
+        jsr show_a000_template
         lda #55                             ; codice del SID
         sta OPTION
         jsr receive_buffer
@@ -1447,9 +1448,37 @@ SID_init
         cli
 .loop   jsr getin
         cmp #32
-        bne .loop
+        beq .stop
+        cmp #136                            ; F7: SID successivo
+        beq .next
+        cmp #133                            ; F1: SID precedente
+        beq .prev
+        jmp .loop
+.next   lda #68
+        jmp .load
+.prev   lda #69
+.load   sta sid_cmd
         jsr stop_SID
-        rts
+        lda #$1b                            ; il SID puo' aver cambiato il VIC
+        sta $d011
+        lda #$17
+        sta $d018
+        lda #$c8
+        sta $d016
+        lda $dd00
+        and #$fc
+        ora #$03                            ; VIC bank 0
+        sta $dd00
+        lda sid_cmd
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx
+        lda SIZE
+        cmp #6
+        bne .stopped
+        jmp .reload
+.stop   jsr stop_SID
+.stopped rts
 
 no_play rts
 
@@ -1519,49 +1548,37 @@ stop_SID
 ; ---------------------------------------------------------------------------
 ;  Menu: testi
 ; ---------------------------------------------------------------------------
+!ifndef CART {
 menu_text
-        !pet " --------------------", 13
-        !pet "    *** C64 ESP32 Cart ***", 13
-        !pet "    *** by M.Angelini ***", 13
-!ifndef CART {
-        !pet "   (PRG: ESP32 simulato)", 13
-}
-        !pet " --------------------", 13, 13
-        !pet "1.SD", 13
-        !pet "2.Super", 13
-        !pet "3.Msg", 13
-        !pet "4.Ora", 13
-        !pet "5.BASIC", 13
-        !pet "6.Koala", 13
-        !pet "7.NEWS", 13
-        !pet "8.Koala", 13
-        !pet "9.SEQ", 13, 0
+        !byte 13
+        !pet "      C64 ESP32 CARTRIDGE", 13
+        !pet "        (SIMULATED ESP32)", 13, 13, 13, 13
+        !pet "         SD CARD", 13
+        !pet "         SUPERMON", 13
+        !pet "           HELP", 13
+        !pet "       CLOCK / WEATHER", 13
+        !pet "           BASIC", 13
+        !pet "           KOALA", 13
+        !pet "           NEWS", 13
+        !pet "      KOALA SLIDESHOW", 13
+        !pet "     PETSCII SLIDESHOW", 13, 0
 
-!ifndef CART {
 msg_nocart
-        !pet "Serve la cartuccia.", 13, 13
-        !pet "Premi un tasto.", 0
-msg_sent
-        !pet "Messaggio inviato.", 13, 13
-        !pet "Premi un tasto.", 0
+        !pet "Cartridge required.", 13, 13
+        !pet "Press a key.", 0
 }
 msg_nokoala
-        !pet "Nessun Koala.", 13
-        !pet "Carica .koa da SD.", 13, 13
-        !pet "Premi tasto.", 0
-
-test_msg
-        !pet "prova invio testo", 128
-test_msg_end
+        !pet "No Koala image.", 0
+msg_sid
+        !pet "PLAY LOADED SID? Y/N", 0
 
 ; ---------------------------------------------------------------------------
 ;  Colori e variabili
 ; ---------------------------------------------------------------------------
-colour      !byte 6,2,4,5,3,7,1,7,3,5,4,2,6,0
+colour      !byte 6,2,4,5,3,7,1,7,3,5,4,2,6,1
 tmp         !byte 0
 colourdelay !byte 0
 CHAR_COLOR  !byte 1
-PITCH       !byte 125
 
 OPTION      !byte 0                         ; comando per l'ESP32
 SIZE        !byte 0,0,0,0                   ; lunghezza (2) e indirizzo (2) dell'ultimo blocco
@@ -1570,8 +1587,13 @@ RXFULL      !byte 0
 RYINDEX     !byte 0                         ; (erano $02,$03,$04: $03/$04 sono vettori BASIC)
 wait_t0     !byte 0
 wait_wrap   !byte 0
+weather_wait !byte 0
+sid_cmd     !byte 0
 
 HOME_LINE   !byte 0
+menu_mode   !byte 0
+menu_max    !byte 8
+news_bg     !byte 0
 line_count  !byte 0
 dir_ch      !byte 0
 dir_left    !word 0
@@ -1582,15 +1604,12 @@ page_scan   !word 0
 cnt         !word 0
 name_len    !byte 0
 koala_ok    !byte 0
+menu_ready  !byte 0
 news_source !byte 0
 msg_lo      !byte 0
 msg_hi      !byte 0
 
-second      !byte 0,0,0                     ; secondi, minuti, ore
-toggle      !byte 0
-bcd_tmp     !byte 0
-
-TXBUFFER    !pet "prova invio testo", 128
+TXBUFFER    !pet "test message", 128
             !fill 30, 0
 
 ; ---------------------------------------------------------------------------
@@ -1696,23 +1715,37 @@ send_buffer
 .e      rts
 
 !zone news
-news_menu
-        !pet 13, "Fonte news:", 13, 13
-        !pet "1.ANSA", 13
-        !pet "2.RAI", 13
-        !pet "3.REPUBBLICA", 13
-        !pet "4.SOLE24", 13
-        !pet "5.GOOGLE", 13
-        !pet "6.NEWSAPI", 13
-        !pet "7.BBC", 13
-        !pet "8.ALJAZEERA", 13
-        !pet "9.SCMP", 13
-        !pet "0.CGTN", 13, 13
-        !pet "1-9,0.", 13, 0
-
 news
+        lda news_bg
+        cmp #1
+        bne .nokoala
+        lda #62                             ; reset lista Koala della directory
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx
+        lda #61                             ; primo Koala
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        lda SIZE+3
+        cmp #>PICTURE
+        bne .nokoala
+        lda #<3000
+        sta art_interval
+        lda #>3000
+        sta art_interval+1
+        lda #0
+        sta art_cnt
+        sta art_cnt+1
+        jmp .koalaok
+.nokoala lda #0
+        sta news_bg                         ; nessun Koala: torna a PETSCII
+.koalaok
+        lda news_bg
+        cmp #2
+        beq .keepbg                         ; clock/weather: template gia' a video
         jsr clear_screen_text
-        lda #57
+.keepbg lda #57
         sta OPTION
         jsr receive_buffer
         jsr wait_rx
@@ -1720,24 +1753,32 @@ news
         clc
         adc #70
         sta OPTION
-        lda koala_ok
+        lda news_bg
         bne .send
         lda OPTION
         clc
-        adc #20                             ; 90..99: NEWS + grafica PETSCII
+        adc #20                             ; 90..99: NEWS + PETSCII art
         sta OPTION
 .send   jsr receive_buffer
         jsr wait_rx_long
         lda #0
         sta RXFULL
-        lda koala_ok
+        lda news_bg
         bne .noart
         jsr copy_art                        ; grafica accodata al testo
-.noart  lda koala_ok
+.noart  lda #0
         sta split_mode
+        lda news_bg
+        cmp #1
+        bne .splitdone
+        lda #1
+        sta split_mode
+.splitdone
         lda #0
         sta sid_bg_active
         lda sid_loaded
+        beq .nosid
+        lda sid_choice
         beq .nosid
         lda split_mode
         beq .textmask
@@ -1751,15 +1792,21 @@ news
         jsr sid_init_once
         lda #1
         sta sid_bg_active
-.nosid  jsr sound
-
+.nosid
+        lda #<3000
+        sta art_interval
+        lda #>3000
+        sta art_interval+1
+        lda news_bg
+        cmp #1
+        beq .noinitial
         ; carica subito il primo art / immagine SEQ prima di far partire lo scroller
         lda art_interval
         sta art_cnt
         lda art_interval+1
         sta art_cnt+1
         jsr art_tick
-
+.noinitial
         jsr set_scroller_irq
         sei
         lda #$00
@@ -1811,6 +1858,45 @@ copy_art
         lda #$d8
         sta ptr2+1
         jmp copy920
+
+copy_weather_top
+        lda #<$a000
+        sta ptr1
+        lda #>$a000
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$04
+        sta ptr2+1
+        jsr copy_top
+        lda #<($a000+1000)
+        sta ptr1
+        lda #>($a000+1000)
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$d8
+        sta ptr2+1
+        jmp copy_top
+
+copy_top
+        ldy #0
+        ldx #3
+.wpages lda (ptr1),y
+        sta (ptr2),y
+        iny
+        bne .wpages
+        inc ptr1+1
+        inc ptr2+1
+        dex
+        bne .wpages
+        ldx #152
+.wtail  lda (ptr1),y
+        sta (ptr2),y
+        iny
+        dex
+        bne .wtail
+        rts
 
 copy920
         ldy #0
@@ -1892,7 +1978,18 @@ load_art_cmd
 ; se arriva a $9000 e' un pattern generato. Il timer passa a 15 s per le
 ; immagini e torna a 60 s per i pattern generati.
 art_tick
+        lda news_bg
+        cmp #2
+        bne .notweather
+        lda art_interval
+        ora art_interval+1
+        bne .notweather
+        jmp .atend                          ; meteo NEWS: snapshot, niente refresh
+.notweather
         lda split_mode
+        beq .at_run
+        lda news_bg
+        cmp #1
         beq .at_run
         jmp .atend
 .at_run inc art_cnt
@@ -1923,6 +2020,12 @@ art_tick
         lda #0
         sta sid_bg_active
 
+        lda news_bg
+        cmp #1
+        beq .koala_pic
+        cmp #2
+        beq .weather
+
         lda #86
         jsr load_art_cmd
 
@@ -1930,15 +2033,36 @@ art_tick
         cmp #$a0
         bcs .seq
         jsr copy_art
-        lda #<3000
+        lda #<1500
         sta art_interval
-        lda #>3000
+        lda #>1500
         sta art_interval+1
         jmp .at_after
 .seq    jsr show_seq
-        lda #<750
+        lda #<1500
         sta art_interval
-        lda #>750
+        lda #>1500
+        sta art_interval+1
+        jmp .at_after
+.koala_pic
+        lda #61                             ; prossimo Koala
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        lda SIZE+3
+        cmp #>PICTURE
+        bne .koala_done
+        jsr koala_prepare
+.koala_done
+        jmp .at_after
+.weather
+        lda #52
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        jsr copy_weather_top
+        lda #0                              ; snapshot: niente refresh in NEWS
+        sta art_interval
         sta art_interval+1
 .at_after  jsr clear_bottom
         lda #%00010100
@@ -2148,6 +2272,8 @@ sid_bg_active !byte 0
 slideshow_sid_started !byte 0
 sid_paused  !byte 0
 sid_conflict  !byte 0
+sid_choice  !byte 0
+sid_mask    !byte $2d
 sid_init_lo !byte 0
 sid_init_hi !byte 0
 sid_play_lo !byte 0

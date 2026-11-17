@@ -1,6 +1,6 @@
 # C64 ESP32 Cart — note sessione `pi-work`
 
-Ultimo aggiornamento: 2026-11-15  
+Ultimo aggiornamento: 2026-11-16
 Branch di sviluppo: `pi-work`  
 `main`: versione stabile, il merge verrà fatto solo alla PR finale.
 
@@ -88,8 +88,8 @@ arduino-cli upload  -p /dev/ttyACM0 --fqbn esp32:esp32:mhetesp32minikit c64esp32
   - parsing dello stub BASIC `SYS xxxx`
 - Slideshow Koala:
   - comandi 61/62
-  - lista Koala in RAM
-  - cache `koalist.txt`
+  - lista Koala in RAM preparata durante la scansione della directory
+  - fallback: se la directory non e' ancora pronta, `buildKoalaList` riscansiona la SD
   - SID di sottofondo con pausa durante il trasferimento NMI
 - Audio test separato (vedi sotto)
 
@@ -99,7 +99,7 @@ arduino-cli upload  -p /dev/ttyACM0 --fqbn esp32:esp32:mhetesp32minikit c64esp32
 49 = directory
 50 = Supermon+
 51 = ricevi nome file / directory
-52 = meteo/ora
+52 = schermata meteo/ora (screen+colori a $A000)
 53 = file PRG/SID/Koala
 55 = dati SID
 56 = info SID
@@ -108,6 +108,11 @@ arduino-cli upload  -p /dev/ttyACM0 --fqbn esp32:esp32:mhetesp32minikit c64esp32
 60 = entry point PRG
 61 = prossimo Koala slideshow
 62 = reset lista slideshow
+63 = pagina HELP (stream PETSCII a $A000)
+64 = template grafico del menu (screen+colori a $9800)
+65 = schermata scelta fonte NEWS (a $A000)
+66 = schermata bordo directory SD (a $A000)
+67 = schermata scelta sfondo NEWS (a $A000)
 70 = avvia audio test
 71 = ferma audio test
 ```
@@ -120,8 +125,21 @@ Build cartuccia ROM:
 
 ```bash
 acme -DCART=1 c64esp32cart.asm
-# -> c64esp8kROM.bin
+# -> c64esp8kROM.bin (menu completo incorporato, build storica)
 ```
+
+### Bootstrap EPROM 8K (consigliato)
+
+```bash
+acme bootstrap.asm
+# -> c64esp8kBOOT.bin (8192 byte)
+```
+
+Il bootstrap copia un loader minimale a `$C000`, invia il comando ESP32
+**112** per alzare EXROM (GPIO2/CLED tramite transistor), carica
+`espnewsauto.prg` dalla root della SD a `$0801` e salta all'entry point.
+In questo modo la EPROM non deve piu' contenere tutto il menu e si puo'
+aggiornare il PRG sulla SD senza riprogrammare la 27C512.
 
 Build PRG diretto a `$C000` con funzioni cartuccia:
 
@@ -142,13 +160,13 @@ SYS 49152
 Marker menu corrente:
 
 ```text
-*** by M.Angelini C000k ***
+C64 ESP32 CARTRIDGE / by M.Angelini
 ```
 
-SHA256 ultimo PRG:
+SHA256 ultimo PRG (`c64esp32menu_c000_cart.prg`):
 
 ```text
-400c5a00a55b4d9b323f456ff3e637fb699ea73eee37da18fd9df7dec0a1e625
+3d17e8a7bd14599eca27f6176c48fbaaffbf4a548c7d8b70591159951a58ffb2
 ```
 
 ### Mappa memoria C64 usata
@@ -160,7 +178,10 @@ $1000-$3EFF  lista directory (max 12032 byte)
 $2000-$3F3F  bitmap Koala (VIC bank 0, base $2000)
 $6000-$8710  sorgente Koala
 $8800-$8FD0  testo NEWS
-$C000-$CE81  codice (build C000k)
+$9000-$97CF  art PETSCII generata per le NEWS
+$9800-$9FCF  template menu (1000 screen + 1000 colori)
+$A000-$BFFF  staging SEQ e HELP (BASIC ROM disattivata con $01=$36)
+$C000-$CFFB  codice (build C000k)
 $D800-$DBE7  color RAM
 ```
 
@@ -172,6 +193,49 @@ $D800-$DBE7  color RAM
   - `$D011/$D018/$D016` corretti
   - auto-display dopo load
 - cursore disabilitato nel menu, riabilitato in BASIC
+- menu iniziale grafico generato dall'ESP32 (comando 64):
+  - screen+colori inviati direttamente a `$9800-$9FCF`
+  - titolo centrato in alto, voci allineate a sinistra, cornice sul bordo
+  - navigazione con frecce SU/GIU + RETURN
+  - la voce selezionata ha lo stesso effetto "flush"/color wash della directory
+  - il color wash non tocca le colonne 0 e 39: i bordi restano del colore originale
+- prima di Koala slideshow, SEQ slideshow e NEWS viene chiesto
+  `PLAY LOADED SID? Y/N` (solo se un SID e' caricato; il SID va caricato prima da SD)
+- NEWS:
+  - scelta fonte con schermata dedicata (comando 65), frecce + RETURN
+  - scelta sfondo con schermata dedicata (comando 67), frecce + RETURN:
+    PETSCII, KOALA, CLOCK/WEATHER
+  - KOALA come sfondo NEWS usa lo slideshow dei Koala della directory corrente;
+    se non ce ne sono, ripiega su PETSCII
+  - NEWS: Koala ogni ~60 s, PETSCII ogni ~30 s; meteo e' uno snapshot senza
+    refresh periodico
+  - scelta sfondo: PETSCII, Koala della directory corrente o clock/weather
+  - con sfondo clock/weather la schermata meteo resta al suo posto come
+    snapshot: non parte lo slideshow PETSCII e non c'e' refresh periodico
+- directory:
+  - schermata con cornice (comando 66), testo indentato dentro il bordo
+  - F1/F7, frecce e RETURN funzionano come prima
+  - `read_from_screen` legge dal col 2: apertura file e sottocartelle corretta
+  - PLOT con X=riga, Y=colonna: X=1/Y=2 porta il testo a riga 1, colonna 2
+  - 22 righe per pagina, cosi' l'ultima non tocca il bordo inferiore
+  - dopo ogni CR due cursor-right: `/..` e i nomi dei file restano a colonna 2
+    e la lettura dal col 2 funziona
+  - F1/F7 salvano `ptr1` sullo stack prima di copiare il template: la pagina
+    successiva/precedente riparte dal puntatore dati corretto
+  - la scansione della directory si ferma quando la lista e' piena: evita
+    timeout/hang su root con moltissimi file
+  - il color wash non tocca i bordi
+- meteo/ora: schermata 40x25 generata dall'ESP32 (comando 52), colori e testi
+  centrati; dal menu si aggiorna ogni ~5 s, come sfondo NEWS resta uno snapshot
+- `Clouds` corretto: usa `obj["clouds"]["all"]` (prima restava sempre 0)
+- nel menu `$01=$36`: BASIC ROM disattivata, `$A000-$BFFF` disponibile come RAM
+- voce HELP: l'ESP32 invia un testo PETSCII a `$A000` (comando 63), il C64 lo
+  stampa con `show_seq` e torna al menu
+- Supermon: prima del salto a `$A000` il C64 pulisce lo schermo, cosi' le
+  scritte del menu non si sovrappongono al monitor
+- il vecchio comando `3.Msg` e' stato rimosso
+- se un SID o un PRG puo' sovrascrivere `$9800`, il template menu viene
+  ricaricato al successivo ritorno al menu
 - directory:
   - F7 pagina successiva
   - F1 pagina precedente
@@ -196,6 +260,8 @@ $D800-$DBE7  color RAM
   - lunghezza = filesize - 2
   - destinazione = load address
   - entry point via comando 60
+  - prima del `jmp (PRG_ENTRY)` viene ripristinato `$01=$37` (BASIC/Kernal/I-O)
+    e vengono chiamati CLR/relink BASIC, altrimenti i PRG non partono
 
 ---
 
@@ -531,7 +597,7 @@ Layout NEWS aggiornato:
 
 - testo + art generata: `$8800-$97CF`
 - stream SEQ: `$A000-$BFFF`
-- codice: `$C000-$CFEF`
+- codice: `$C000-$CFDF`
 
 ---
 
@@ -543,6 +609,10 @@ Nuova voce di menu: `9.SEQ`.
 - `F7` = immagine successiva, `F1` = precedente, `SPACE` = torna al menu.
 - Le immagini vengono lette da `/petscii-seq` sulla SD dell'ESP32.
 - Comandi C64 -> ESP32: `89` prima immagine, `87` successiva, `88` precedente.
+- L'ESP32 legge la lista da `/petscii-seq/manifest.txt` (creato da
+  `extract_seq.py`) oppure da `/petscii-seq/seqlist.txt`; solo come ultimo
+  fallback scandisce la directory e crea la cache. In questo modo l'avvio
+  dello slideshow non richiede piu' 30 secondi.
 - L'ESP32 ordina i file `.seq` per nome e salta quelli oltre 8000 byte.
 - Se non ci sono `.seq`, l'ESP32 invia un pattern generato a `$9000`.
 
@@ -565,5 +635,60 @@ espnews.prg
 espnewsauto.prg
 ```
 
-Attenzione: il codice C64 arriva a `$CFF9`, quindi restano solo 7 byte liberi
+Attenzione: il codice C64 arriva a `$CFFB`, quindi restano 5 byte liberi
 nella pagina `$C000-$CFFF`.
+
+---
+
+## 14. Menu grafico, HELP e avvio slideshow
+
+- Il menu gira con `$01=$36`: BASIC ROM spenta, KERNAL e I/O attivi. In questo
+  modo `$A000-$BFFF` e' RAM utilizzabile (serve gia' per lo staging SEQ).
+- All'avvio il C64 chiede all'ESP32 il comando 64: il firmware genera una
+  schermata 40x25 con cornice e titolo centrato in alto, poi invia 1000 byte
+  di screen RAM + 1000 byte di color RAM direttamente a `$9800`.
+- Il C64 mostra il template da `$9800`; ai successivi ritorni al menu lo
+  ricopia senza nuove comunicazioni.
+- Le voci del menu sono allineate a sinistra; la voce selezionata usa lo
+  stesso color wash della directory. Frecce SU/GIU per muoversi, RETURN per
+  attivare. Il color wash salta le colonne 0 e 39 per non cambiare il bordo.
+- La scelta della fonte NEWS usa una schermata generata dall'ESP32 (comando
+  65) e la stessa navigazione a frecce/color wash.
+- Prima di Koala slideshow, SEQ slideshow e NEWS viene chiesto se suonare il
+  SID in sottofondo (`PLAY LOADED SID? Y/N`), solo se un SID e' caricato.
+  Nel caso SEQ il SID viene messo in pausa durante il trasferimento NMI.
+- La schermata NEWS chiede anche lo sfondo con una schermata dedicata
+  (comando 67) e frecce/RETURN: PETSCII, Koala della directory corrente
+  oppure clock/weather.
+- La directory SD usa una schermata con cornice (comando 66); il testo parte
+  dalla colonna 2 e viene limitato a 22 righe per non toccare il bordo.
+- La schermata meteo/ora (comando 52) e' generata dall'ESP32 con colori e
+  testi centrati. Aprendola dal menu si aggiorna ogni ~5 s; come sfondo NEWS
+  e' uno snapshot e non viene aggiornata periodicamente.
+- La pagina HELP (comando 63) e' in inglese e descrive SD/PRG/SID/Koala, NEWS,
+  meteo OpenWeather, BASIC, slideshow Koala/PETSCII e musica SID di sfondo.
+  Include `Q = QUIT DIRECTORY` e l'avviso di caricare prima il SID da SD.
+- Il player SID (comando 56) usa una schermata 40x25 a $A000 con nome/autore/
+  dati e i comandi F1/F7/SPACE. Nel player F1/F7 caricano il SID precedente/
+  successivo della directory (comandi 68/69), SPACE ferma e torna al menu.
+  Prima di mostrare la schermata successiva vengono ripristinati i registri VIC
+  che il SID precedente puo' aver cambiato e si riporta `$01=$36` per leggere
+  il template da `$A000` in RAM (con `$01=$37` si leggerebbe la ROM BASIC).
+  Anche `restart` ripristina il VIC bank 0, cosi' uscendo con SPACE il menu
+  non viene mostrato con il bank lasciato dal SID.
+- La lista dei SID viene preparata durante la scansione della directory, come
+  quella dei Koala.
+- Lo slideshow Koala standalone accetta F7 (successivo, comando 61) e F1
+  (precedente, comando 54), oltre a SPACE per uscire.
+- I nomi file con basename >37 caratteri sono stati accorciati sulla SD
+  (84 file: 72 SID, 12 KOA), preservando estensione e suffisso _4000/_9000.
+- I testi visibili del programma sono stati convertiti in inglese.
+- Tra un'immagine Koala e l'altra il cursore KERNAL resta spento durante lo
+  schermo nero.
+- La lista dei Koala viene costruita durante la scansione della directory
+  (`buildDirectoryListing`); il comando 62 non rilegge piu' la SD.
+- La lista dei SEQ viene letta da `manifest.txt`/`seqlist.txt` per evitare la
+  scansione lenta delle 681 entry.
+- Tra un'immagine Koala e l'altra lo schermo viene pulito/annerito
+  (`slide_text_mode` chiama `clear_screen_text`) per evitare caratteri residui
+  durante il passaggio bitmap -> testo -> bitmap.

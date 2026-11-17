@@ -17,3 +17,6 @@ firmware_backup/
 # ulteriori output di build locali
 /espnewsauto.prg
 /esp3e
+
+# bootstrap EPROM locale
+/c64esp8kBOOT.bin

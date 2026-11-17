@@ -1,5 +1,9 @@
 # AGENTS.md — C64 ESP32 Cart
 
+> **Ripresa rapida:** all'avvio leggere [`PROJECT_STATE.md`](PROJECT_STATE.md)
+> (riepilogo aggiornato al 2026-11-17: stato, hash, bootstrap EPROM, test da
+> fare). Il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md).
+
 Contesto operativo per Pi. Per il diario completo della sessione vedi
 [`SESSION_NOTES.md`](SESSION_NOTES.md).
 
@@ -28,6 +32,25 @@ Contesto operativo per Pi. Per il diario completo della sessione vedi
 arduino-cli compile --fqbn esp32:esp32:mhetesp32minikit c64esp32Cart
 arduino-cli upload  -p /dev/ttyACM0 --fqbn esp32:esp32:mhetesp32minikit c64esp32Cart
 ```
+
+### Bootstrap EPROM 8K (consigliato per la 27C512)
+
+```bash
+acme bootstrap.asm
+# -> c64esp8kBOOT.bin (8192 byte, da inserire nel file 64K della 27C512)
+```
+
+Il bootstrap:
+- parte dalla EPROM a `$8000` (CBM80);
+- copia un loader di ~344 byte a `$C000`;
+- invia il comando ESP32 **112** per alzare EXROM (GPIO2/CLED -> transistor):
+  la EPROM `$8000-$9FFF` viene rimossa e resta solo RAM;
+- carica `espnewsauto.prg` dalla SD dell'ESP32 a `$0801`;
+- salta all'entry point del PRG.
+
+Requisiti: firmware ESP32 con comando 112 e `espnewsauto.prg` nella root della SD.
+Il setup ESP32 tiene EXROM basso per 1.5 s dopo l'init come fallback, poi lo alza;
+il loader invia comunque il comando 112 appena pronto.
 
 ### C64 ROM cartuccia
 
@@ -115,19 +138,49 @@ git push origin pi-work
   - bitmap `$2000-$3F3F`
   - sorgente Koala `$6000-$8710`
   - testo NEWS `$8800-$8FD0`
-  - staging NEWS + art/SEQ `$8800-$BFFF`
-  - codice `$C000-$CE81`
+  - art PETSCII NEWS `$9000-$97CF`
+  - template menu `$9800-$9FCF` (screen+colori)
+  - staging SEQ/HELP `$A000-$BFFF` (BASIC ROM spenta nel menu con `$01=$36`)
+  - codice `$C000-$CFFB`
 - I file interni `directory.txt` e `koalist.txt` sono filtrati dalla lista
 
 ## Funzioni già presenti
 
 - WiFi opzionale/non bloccante
 - SD con lettura diretta in RAM (niente file temporaneo per la directory)
-- directory con F1/F7, sottodirectory, `/..`
+- directory con F1/F7, sottodirectory, `/..`, schermata con cornice;
+  apertura file/sottocartelle corretta (lettura dal col 2), 22 righe per pagina
+- PRG caricati dalla directory avviati con `$01=$37` + CLR/relink BASIC
+- sottomenu NEWS BACKGROUND con frecce/ RETURN: PETSCII, KOALA, CLOCK/WEATHER
+- KOALA come sfondo NEWS: slideshow dei Koala della directory corrente
+- player SID: F1/F7 SID precedente/successivo, SPACE torna al menu
+- slideshow Koala standalone: F1/F7 precedente/successivo, SPACE esce
+- NEWS: Koala ogni ~60 s, PETSCII ogni ~30 s; meteo snapshot senza refresh
+- meteo standalone aggiornato ogni ~5 s
+- nomi file oltre 37 caratteri accorciati sulla SD
 - Koala auto-display
-- slideshow Koala (`8.Koala slideshow`) con cache `koalist.txt`
+- menu grafico generato dall'ESP32 (comando 64): cornice, titolo centrato,
+  voci a sinistra, color wash sulla voce selezionata, frecce SU/GIU + RETURN;
+  il color wash non cambia il colore dei bordi
+- HELP in inglese (comando 63) con descrizione di tutte le funzioni,
+  `Q = QUIT DIRECTORY` e avviso di caricare prima il SID da SD
+- tutto il testo visibile del programma e' in inglese
+- BASIC ROM disattivata nel menu per usare `$A000-$BFFF` come RAM
+- template menu salvato in `$9800-$9FCF` e ricaricato se un SID/PRG lo sovrascrive
+- richiesta `PLAY LOADED SID? Y/N` prima di Koala slideshow, SEQ slideshow e NEWS
+- NEWS: scelta fonte con schermata dedicata (comando 65), frecce + RETURN;
+  poi scelta sfondo (comando 67): PETSCII, KOALA, CLOCK/WEATHER;
+  scelta sfondo PETSCII / Koala della directory corrente / clock-weather;
+  con clock-weather la schermata meteo resta come snapshot
+- schermata meteo/ora generata dall'ESP32 (comando 52), testi centrati e
+  colorati; orario snapshot; `Clouds` corretto
+- slideshow Koala con lista Koala preparata durante la scansione della
+  directory (niente attesa di 10-20 s all'avvio) e schermo nero senza cursore
+  tra le immagini
+- slideshow PETSCII con lista letta da `manifest.txt`/`seqlist.txt`
+  (niente scansione lenta delle 681 entry); SID in pausa durante l'NMI
 - SID di sottofondo nello slideshow, in pausa durante l'NMI
-- NEWS con Koala di sfondo e testo scorrevole
+- NEWS con Koala/PETSCII/clock-weather di sfondo e testo scorrevole
 - grafica PETSCII casuale nello schermo NEWS quando non c'è un Koala caricato
   (charset ROM in alto, font 2x2 solo nelle righe dello scroller)
 - nome della fonte sotto il titolo e 4 pattern (city, stelle, mattoni, labirinto)

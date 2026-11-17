@@ -212,6 +212,9 @@ All pictures below are **real captures of the cartridge running on a C64**
 > Missing a real photo for a screen? `tools/render_menu.py docs/renders`
 > writes fallback renders of the ESP32 templates (same texts, colours and
 > layout) into that folder.
+>
+> In the CLOCK/WEATHER capture the city name was replaced with a neutral one
+> ("ROMA") so the author's location is not published.
 
 ---
 
@@ -341,6 +344,8 @@ cp c64esp32Cart/secrets.example.h c64esp32Cart/secrets.h
 const char *ssid = "YOUR_WIFI_SSID";
 const char *password = "YOUR_WIFI_PASSWORD";
 String openweatherApiKey = "YOUR_OPENWEATHER_API_KEY";
+String openweatherLat = "xxxxx";   // latitudine in gradi decimali
+String openweatherLon = "xxxxx";   // longitudine in gradi decimali
 String newsApiKey = "YOUR_NEWSAPI_KEY";
 ```
 
@@ -355,9 +360,12 @@ http://api.openweathermap.org/data/2.5/weather?lat=<LAT>&lon=<LON>&units=metric&
 ```
 
 - `units=metric` -> temperature in °C, wind in m/s, pressure in hPa;
-- **latitude and longitude live in the firmware**, not in `secrets.h`:
-  `String lat = ...; String lon = ...;` at the top of
-  `c64esp32Cart/c64esp32Cart.ino`.
+- **latitude and longitude go in `secrets.h`** (`openweatherLat` /
+  `openweatherLon`, decimal degrees, e.g. Rome `41.9028` / `12.4964`) so the
+  position never ends up in the repository;
+- if they are left as `xxxxx` the firmware only logs
+  `Meteo: lat/lon non configurate in secrets.h` and the weather screen shows
+  `WIFI NOT CONNECTED` / no data — WiFi, SD and the rest keep working.
 
 From the JSON response the firmware uses `weather[0].description`, `name`,
 `sys.country`, `main.temp/temp_min/temp_max/humidity/pressure`, `wind.speed`

@@ -38,20 +38,21 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 
 1. [Features](#features)
 2. [Hardware](#hardware)
-3. [Menu and keys](#menu-and-keys)
-4. [Screenshots](#screenshots)
-5. [Jumper configuration](#jumper-configuration)
-6. [Boot: the EPROM bootstrap](#boot-the-eprom-bootstrap)
-7. [ESP32 firmware](#esp32-firmware)
-8. [secrets.h: WiFi, OpenWeather, NewsAPI](#secretsh-wifi-openweather-newsapi)
-9. [Preparing the SD card](#preparing-the-sd-card)
-10. [Koala files](#koala-files)
-11. [SID files](#sid-files)
-12. [PETSCII art (SEQ / D64)](#petscii-art-seq--d64)
-13. [Programming the 27C512](#programming-the-27c512)
-14. [C64 build commands](#c64-build-commands)
-15. [C64 memory layout](#c64-memory-layout)
-16. [Troubleshooting](#troubleshooting)
+3. [Schematic](#schematic)
+4. [Menu and keys](#menu-and-keys)
+5. [Screenshots](#screenshots)
+6. [Jumper configuration](#jumper-configuration)
+7. [Boot: the EPROM bootstrap](#boot-the-eprom-bootstrap)
+8. [ESP32 firmware](#esp32-firmware)
+9. [secrets.h: WiFi, OpenWeather, NewsAPI](#secretsh-wifi-openweather-newsapi)
+10. [Preparing the SD card](#preparing-the-sd-card)
+11. [Koala files](#koala-files)
+12. [SID files](#sid-files)
+13. [PETSCII art (SEQ / D64)](#petscii-art-seq--d64)
+14. [Programming the 27C512](#programming-the-27c512)
+15. [C64 build commands](#c64-build-commands)
+16. [C64 memory layout](#c64-memory-layout)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -107,6 +108,28 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 
 Video of the cartridge in action:
 <https://www.youtube.com/watch?v=Q0KYe2STK2w>
+
+---
+
+## Schematic
+
+Click the picture to open it full size (1800 px wide).
+
+[![schematic](schematic.jpg)](schematic.jpg)
+
+Full KiCad 7 project (schematic + PCB, rev 1.1) is in
+[`c64esp32crt1.1_kicad7/`](c64esp32crt1.1_kicad7):
+
+| File | Content |
+|---|---|
+| `ESP32Hardware.kicad_sch` / `.kicad_pcb` | KiCad sources |
+| `schematic.pdf` | printable schematic |
+| `gerber/` | fabrication files |
+
+Main blocks: C64 expansion port (`U1`), 74LS244 data buffer (`U3`),
+74HC597 shift register (`U4`), 74LS14 Schmitt triggers for `RST`/`NMI`
+(`U7`), BC547 EXROM driver (`Q1`, base from `IO_02` via `R13`), and the
+`GAME`/`EXROM`/`ROML`/`ROMH` jumpers.
 
 ---
 

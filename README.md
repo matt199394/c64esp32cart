@@ -15,7 +15,22 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
   NEWS and weather data, and transfers files to the C64 over a parallel bus
   plus NMI.
 
-![cartridge](sideUp1.jpg)
+<table>
+  <tr>
+    <td width="33%" align="center">
+      <img src="sideUp1.jpg" width="260" alt="cartridge, top side"><br>
+      <sub>Top side, ESP32 fitted</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="sideUp2.jpg" width="260" alt="cartridge, top side without ESP32"><br>
+      <sub>Top side, ESP32 removed (microSD slot, BC547, jumpers)</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="sideBottom.jpg" width="260" alt="cartridge, bottom side"><br>
+      <sub>Bottom side (solder pads and signal names)</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -126,40 +141,50 @@ MAIN MENU
 ## Screenshots
 
 All pictures below are **real captures of the cartridge running on a C64**
-(VLC snapshots of the video output, saved at 840 px wide and shown at 420 px,
-two per row).
+(VLC snapshots of the video output, saved at 840 px wide and shown at 420 px).
 
-<p align="center">
-  <img src="docs/screenshots/main.jpg" width="420" alt="main menu">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/dir.jpg" width="420" alt="SD directory">
-</p>
-
-<p align="center"><sub><b>Main menu</b> (left) &nbsp;&middot;&nbsp; <b>SD directory</b> (right)</sub></p>
-
-<p align="center">
-  <img src="docs/screenshots/supermon.jpg" width="420" alt="supermon">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/news-src.jpg" width="420" alt="news source">
-</p>
-
-<p align="center"><sub><b>SUPERMON ($A000)</b> (left) &nbsp;&middot;&nbsp; <b>NEWS source selection</b> (right)</sub></p>
-
-<p align="center">
-  <img src="docs/screenshots/news-bg.jpg" width="420" alt="news background">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/news-petscii.jpg" width="420" alt="news with PETSCII art">
-</p>
-
-<p align="center"><sub><b>NEWS background selection</b> (left) &nbsp;&middot;&nbsp; <b>NEWS with a PETSCII art background</b> (right)</sub></p>
-
-<p align="center">
-  <img src="docs/screenshots/weather.jpg" width="420" alt="clock weather">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/sid.jpg" width="420" alt="sid player">
-</p>
-
-<p align="center"><sub><b>CLOCK / WEATHER</b> (left) &nbsp;&middot;&nbsp; <b>SID player</b> (right)</sub></p>
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/main.jpg" width="420" alt="main menu"><br>
+      <b>Main menu</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/dir.jpg" width="420" alt="SD directory"><br>
+      <b>SD directory</b>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/supermon.jpg" width="420" alt="supermon"><br>
+      <b>SUPERMON ($A000)</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/news-src.jpg" width="420" alt="news source"><br>
+      <b>NEWS source selection</b>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/news-bg.jpg" width="420" alt="news background"><br>
+      <b>NEWS background selection</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/news-petscii.jpg" width="420" alt="news with PETSCII art"><br>
+      <b>NEWS with a PETSCII art background</b>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/weather.jpg" width="420" alt="clock weather"><br>
+      <b>CLOCK / WEATHER</b>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/sid.jpg" width="420" alt="sid player"><br>
+      <b>SID player</b>
+    </td>
+  </tr>
+</table>
 
 > Missing a real photo for a screen? `tools/render_menu.py docs/renders`
 > writes fallback renders of the ESP32 templates (same texts, colours and

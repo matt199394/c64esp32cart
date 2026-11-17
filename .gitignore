@@ -20,3 +20,10 @@ firmware_backup/
 
 # bootstrap EPROM locale
 /c64esp8kBOOT.bin
+/c64esp8kBOOT_dbg.bin
+
+# immagini/dump EEPROM 27C512 locali
+/W27C512_*.bin
+
+# lock file KiCad
+*.lck

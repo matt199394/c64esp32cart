@@ -21,11 +21,23 @@ il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md).
 - Sulla SD devono esserci `espnewsauto.prg` (root) e i file rinominati; i PRG
   principali sono stati copiati con gli hash indicati sotto.
 - È stato aggiunto il **bootstrap EPROM 8K**: `bootstrap.asm` →
-  `c64esp8kBOOT.bin` (8192 byte). Va programmato nella 27C512 e provato su
-  hardware reale.
-- Prossimo test consigliato: accensione con EPROM bootstrap, verifica EXROM,
-  caricamento automatico di `espnewsauto.prg`, poi test funzioni NEWS/SID/
-  directory/slideshow.
+  `c64esp8kBOOT.bin` (8192 byte).
+- **2026-11-17: bootstrap provato su hardware reale e funzionante**: la C64
+  autostarta da EPROM, il loader alza EXROM (comando 112), carica
+  `espnewsauto.prg` dalla SD e parte il menu.
+- Bug trovato e corretto nel bootstrap: il salto al PRG chiamava `CLR`
+  (`$a659`) e il relink BASIC (`$a533`) **prima** che i puntatori BASIC
+  fossero inizializzati (il coldstart da cartuccia fa solo IOINIT/RAMTAS/
+  RESTOR/CINT). Risultato: crash silenzioso, schermo fermo, menu mai
+  avviato. Ora il bootstrap salta direttamente all'entry point e il PRG fa
+  da solo l'init BASIC che gli serve.
+- **27C512 programmata e verificata** con `W27C512_c64esp8kBOOT.bin`
+  (64K, bootstrap pulito in tutti e 8 i banchi, sha256
+  `193b32b287a80974e57efec42c1fc14c13755ef5dd729ce62d4335ac7cd28ea8`),
+  read-back dal TL866II+ identico byte per byte. Generata con
+  `tools/make_eprom_image.sh all c64esp8kBOOT.bin`.
+- Prossimi test: funzioni NEWS/SID/directory/slideshow con il bootstrap, poi
+  PR finale `pi-work → main`.
 
 ---
 
@@ -90,13 +102,31 @@ jumper, come si faceva con `c64esp8kROM.bin`.
 | `c64esp32menu_c000_cart.prg` | 4097 | `3d17e8a7bd14599eca27f6176c48fbaaffbf4a548c7d8b70591159951a58ffb2` |
 | `espnewsauto.prg` | 4160 | `5f4b00d150778e61429d6688201126850869142ae19d5d704ec90c39660469ea` |
 | `c64esp8kROM.bin` | 8192 | `5b086cdf195fda9811d42f1ca084c2826aa35b491d80268dbe9a89931f047da0` |
-| `c64esp8kBOOT.bin` | 8192 | `5c1a5c7be4037f2392b4cc8a29040862c3ec75550cbfff5f40f71a43c51ef6d5` |
+| `c64esp8kBOOT.bin` | 8192 | `66cd34285219a18c6cb903c7d49a060a4538c5548049e8c76df01f9cb417fb5e` |
 
 `c64esp32menu_c000_cart.prg` e `espnewsauto.prg` sono gli stessi file usati per
 la SD (quando la SD è inserita, verificare con `sha256sum`).
 
 `c64esp8kROM.bin` è la build storica con tutto il menu incorporato.
 La soluzione EPROM consigliata è `c64esp8kBOOT.bin`.
+
+### Programmazione 27C512 (TL866II+)
+
+```bash
+# immagine 64K: bootstrap replicato in tutti e 8 i banchi (jumper-proof)
+tools/make_eprom_image.sh all c64esp8kBOOT.bin  # -> W27C512_c64esp8kBOOT.bin
+
+minipro -p 'W27C512@DIP28' -z                                 # pin/blank check
+minipro -p 'W27C512@DIP28' -w W27C512_c64esp8kBOOT.bin        # write + verify
+minipro -p 'W27C512@DIP28' -r /tmp/W27C512_verify.bin         # read-back
+cmp /tmp/W27C512_verify.bin W27C512_c64esp8kBOOT.bin
+```
+
+Immagine master: 65536 byte, sha256
+`193b32b287a80974e57efec42c1fc14c13755ef5dd729ce62d4335ac7cd28ea8`.
+Se il pin test segnala `Bad contact on pin:...` (tipicamente 25-28 o 1),
+la EPROM e' nel ZIF solo parzialmente: riaprire la leva, raddrizzare i
+piedini e ripetere.
 
 ---
 

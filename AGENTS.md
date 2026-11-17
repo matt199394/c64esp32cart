@@ -42,15 +42,64 @@ acme bootstrap.asm
 
 Il bootstrap:
 - parte dalla EPROM a `$8000` (CBM80);
-- copia un loader di ~344 byte a `$C000`;
+- copia un loader di ~340 byte a `$C000`;
 - invia il comando ESP32 **112** per alzare EXROM (GPIO2/CLED -> transistor):
   la EPROM `$8000-$9FFF` viene rimossa e resta solo RAM;
 - carica `espnewsauto.prg` dalla SD dell'ESP32 a `$0801`;
-- salta all'entry point del PRG.
+- salta all'entry point del PRG (indirizzo ricavato dal `SYS` della riga
+  BASIC, comando ESP32 60).
 
 Requisiti: firmware ESP32 con comando 112 e `espnewsauto.prg` nella root della SD.
 Il setup ESP32 tiene EXROM basso per 1.5 s dopo l'init come fallback, poi lo alza;
 il loader invia comunque il comando 112 appena pronto.
+
+**Non chiamare `CLR` (`$a659`) ne' il relink BASIC (`$a533`) prima del salto
+all'entry point**: il coldstart da cartuccia inizializza solo il KERNAL, quindi
+`TXTTAB`/`VARTAB`/`ARYTAB`/`STREND` possono contenere spazzatura e il bootstrap
+va in crash silenzioso (schermo fermo, menu mai avviato). Il PRG fa da solo
+l'init BASIC che gli serve. Verificato su hardware reale il 2026-11-17.
+
+#### Banco della 27C512 (importante)
+
+Nella scheda `c64esp32crt1.1` le linee A13/A14/A15 della EPROM hanno un
+pull-up a +5V (R9/R10/R11) e un jumper verso GND (J4=JA13, J5=JA14,
+J6=JA15). Quindi:
+
+| Jumper JA13/JA14/JA15 | A13 A14 A15 | Banco | Offset nel file 64K |
+|---|---|---|---|
+| tutti assenti | 1 1 1 | **7** | `0xE000` |
+| tutti presenti | 0 0 0 | **0** | `0x0000` |
+
+Senza jumper la EPROM non legge il banco 0: la C64 non trova `CBM80` e va al
+BASIC normale (schermo blu con bordo celeste) senza avviare la cartuccia.
+Per essere indipendenti dai jumper, replicare gli 8K in tutti i banchi:
+
+```bash
+acme bootstrap.asm
+tools/make_eprom_image.sh all c64esp8kBOOT.bin   # W27C512_c64esp8kBOOT.bin
+```
+
+Stato jumper rilevante anche per la mappatura:
+- **J9** (`/OE` della EPROM): deve stare su **ROM-L** (pin 1-2) per la cartuccia
+  8K a `$8000-$9FFF`;  
+- **J2** (`GAME`): deve essere **aperto** (GAME alto) per il modo ROMLO;
+- `/CE` della EPROM (pin 20) e' cablato a GND.
+
+Build di debug del bootstrap (mostra a schermo fino a dove arriva):
+
+```bash
+acme -DDBGBOOT=1 -o c64esp8kBOOT_dbg.bin bootstrap.asm
+```
+
+- bordo bianco / sfondo nero = EPROM mappata, coldstart eseguito;
+- `2` = loader copiato a `$C000`; bordo ciano;
+- `3` = ESP32 ha risposto al comando 112; bordo verde;
+- `4` = nome file inviato; bordo giallo;
+- `5` = PRG ricevuto; bordo viola;
+- `6` = entry point ricevuto; bordo verde chiaro;
+- poi 16 byte in hex di `$0801`, indirizzo fine pagina, entry point e
+  checksum a 16 bit del PRG (atteso `5A47` per `espnewsauto.prg`), quindi
+  attesa di un tasto prima del salto.
 
 ### C64 ROM cartuccia
 

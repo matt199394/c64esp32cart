@@ -242,28 +242,38 @@ EPROM invia comunque il comando 112 appena possibile.
 ### EPROM bootstrap
 - `bootstrap.asm` produce `c64esp8kBOOT.bin` 8192 byte.
 - Il C64 parte dalla EPROM a `$8000` (CBM80).
-- `coldstart` inizializza; `warmstart` copia un loader di 344 byte
-  (`BOOT_LEN=$158`) a `$C000`.
+- `coldstart` inizializza; `warmstart` copia un loader di 338 byte
+  (`BOOT_LEN=$152`) a `$C000`.
 - Il loader:
   1. imposta il vettore NMI;
   2. invia comando 112 → EXROM alto;
   3. invia il nome `espnewsauto.prg` (screen code) con comando 51;
   4. carica il PRG con comando 53 a `$0801`;
   5. chiede l'entry point con comando 60;
-  6. `$01=$37`, CLR/relink, salta all'entry (stub BASIC `SYS 2061`).
+  6. `$01=$37` e salta all'entry (stub BASIC `SYS 2061`) **senza** chiamare
+     `CLR`/relink BASIC: il coldstart da cartuccia non inizializza i
+     puntatori BASIC e quelle chiamate mandavano il loader in crash
+     (trovato e corretto il 2026-11-17 su hardware reale).
 - Il PRG caricato copia il payload completo a `$C000` e sovrascrive il loader.
 - La EPROM non contiene più il menu completo: si aggiorna solo la SD.
+- Build di debug: `acme -DDBGBOOT=1 -o c64esp8kBOOT_dbg.bin bootstrap.asm`
+  (marker `2`..`6`, dump a `$0801`, entry point, checksum, attesa tasto).
 
 ---
 
 ## Test da fare / prossimi passi
 
-1. **Bootstrap su hardware reale**:
-   - programmare la 27C512 con `c64esp8kBOOT.bin` nel banco corretto;
-   - accendere e verificare che EXROM venga alzato e che `espnewsauto.prg`
-     parta dalla root della SD;
-   - se non parte, controllare: comando 112 nel firmware, file sulla SD,
-     temporizzazione EXROM, banco EPROM.
+**Fatto (2026-11-17):** bootstrap provato su hardware reale, EPROM programmata
+(`W27C512_c64esp8kBOOT.bin`, bootstrap negli 8 banchi) e verificata; menu
+avviato dal bootstrap; PR #1 `pi-work → main` mergiata con squash (`2a27359`)
+e `pi-work` riallineato a `main`.
+
+1. **Fix cosmetico lista directory**: nella directory i caratteri `_` dei nomi
+   file vengono mostrati come `←` (es. `all←gif←koa←split` invece di
+   `all_gif_koa_split`). Causa: `asciiToPET()` in `c64esp32Cart.ino` lascia
+   passare ASCII `$5F`, che in PETSCII è la freccia sinistra. Mappare `_` su
+   `$A4` (underscore PETSCII) o ripiegare su `-`; verificare a schermo su
+   hardware reale, poi ricompilare e riflashare l'ESP32.
 2. Verificare uscita dal player SID con SPACE: il menu deve riapparire subito
    senza caratteri casuali.
 3. Verificare directory F1/F7: la seconda pagina deve partire dalla riga
@@ -276,7 +286,10 @@ EPROM invia comunque il comando 112 appena possibile.
    - risposta N al SID: nessun SID in sottofondo.
 5. Verificare Supermon: schermo pulito, nessuna sovrapposizione col menu.
 6. Verificare che i nomi file lunghi non mandino più a capo la directory.
-7. Solo dopo i test: PR finale `pi-work → main`.
+7. Manca uno screenshot reale della schermata HELP (`docs/screenshots/`).
+8. Repository reso pubblico: prima di pubblicare controllare la storia Git
+   (le vecchie credenziali WiFi/API key sono ancora nei commit passati) e
+   ruotare le chiavi.
 
 ---
 
@@ -296,8 +309,10 @@ EPROM invia comunque il comando 112 appena possibile.
 
 ## Git
 
-- Branch: `pi-work`.
+- `main`: stabile. Contiene il merge (squash) della PR #1, commit `2a27359`.
+- `pi-work`: branch di sviluppo, riallineato a `main` dopo il merge.
 - Push di sviluppo: `git push origin pi-work`.
+- Storia: la cronologia dettagliata pre-squash è nel PR #1 su GitHub.
 - Non committare mai `c64esp32Cart/secrets.h` né `firmware_backup/`.
 - I binari di build nella root sono in `.gitignore` (incluso
   `c64esp8kBOOT.bin`); i sorgenti e questo riepilogo sì.

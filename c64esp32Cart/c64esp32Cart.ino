@@ -48,9 +48,15 @@
 //forecast API http://api.openweathermap.org
 
 String URL = "http://api.openweathermap.org/data/2.5/weather?";
-// Replace with your location Credentials
-String lat = "43.06071239857755";
-String lon = "10.614730891178944";
+// Coordinate della localita': stanno in secrets.h (openweatherLat/Lon) per
+// non finire nel repository pubblico.
+
+// true se lat/lon sono state configurate in secrets.h
+static bool weatherLocationConfigured() {
+  if (openweatherLat.length() == 0 || openweatherLon.length() == 0) return false;
+  if (openweatherLat == "xxxxx" || openweatherLon == "xxxxx") return false;
+  return true;
+}
 
 //news API: https://newsapi.org
 
@@ -496,11 +502,16 @@ void getWeatherData(){
     if (WiFi.status() != WL_CONNECTED) {
       return;
     }
+    if (!weatherLocationConfigured()) {
+      Serial.println("Meteo: lat/lon non configurate in secrets.h");
+      return;
+    }
 
     HTTPClient http;
 
     //Set HTTP Request Final URL with Location and API key information
-    http.begin(URL + "lat=" + lat + "&lon=" + lon + "&units=metric&appid=" + openweatherApiKey);
+    http.begin(URL + "lat=" + openweatherLat + "&lon=" + openweatherLon +
+               "&units=metric&appid=" + openweatherApiKey);
 
     // start connection and send HTTP Request
     int httpCode = http.GET();

@@ -10,10 +10,10 @@ usando il font di sistema rasterizzato a 8x8 (stile "pixel"), cosi' i file
 nella documentazione restano coerenti con il firmware.
 
 Uso:
-    tools/render_menu.py [cartella_output]
+    tools/render_menu.py [cartella_output]     (default: docs/renders)
 
-Se hai screenshot reali da un C64 (o da un TV), mettili in docs/screenshots/
-con gli stessi nomi: la documentazione li mostra automaticamente.
+Serve come fallback: le schermate in docs/screenshots/ sono foto reali del
+C64, questi render sono utili solo se manca uno screenshot di una schermata.
 """
 
 import os
@@ -297,7 +297,7 @@ SCREENS = {
 
 
 def main():
-    outdir = sys.argv[1] if len(sys.argv) > 1 else "docs/screenshots"
+    outdir = sys.argv[1] if len(sys.argv) > 1 else "docs/renders"
     for name, builder in SCREENS.items():
         builder().render(os.path.join(outdir, name))
 

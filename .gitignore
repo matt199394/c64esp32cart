@@ -25,5 +25,11 @@ firmware_backup/
 # immagini/dump EEPROM 27C512 locali
 /W27C512_*.bin
 
+# snapshot originali del video (si ridimensionano in docs/screenshots)
+/vlcsnap-*.png
+
+# render di fallback delle schermate (rigenerabili con tools/render_menu.py)
+/docs/renders/
+
 # lock file KiCad
 *.lck

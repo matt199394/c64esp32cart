@@ -267,13 +267,17 @@ Real sequence (verified on hardware):
 1. on power-up the ESP32 boots and sets `CLED HIGH` -> **EXROM low**;
 2. the ESP32 pulses the C64 reset line (`GPIO21`);
 3. the C64 finds `CBM80` at `$8000` and jumps to the EEPROM `coldstart`;
-4. the bootstrap copies a ~340-byte loader to `$C000` and starts it;
-5. the loader sends command **112** to the ESP32 (EXROM high: the EEPROM
+4. the bootstrap copies a ~600-byte loader to `$C000` and starts it;
+5. the loader shows a **boot menu** (`1) menu senza sam`, `2) menu con sam`)
+   and waits for key `1` or `2`; if 2 is chosen it sends command **113**
+   ("SAM build": the ESP32 prepares the menu with the SAM entries);
+6. it sends command **112** to the ESP32 (EXROM high: the EEPROM
    disappears and `$8000-$9FFF` becomes RAM again);
-6. it asks for the file name (command **51**: `espnewsauto.prg`), loads it at
-   `$0801` (command **53**) and asks for the entry point (command **60**,
-   parsed from the `SYS` in the BASIC line);
-7. it jumps to the entry point: the PRG copies the menu to `$C000` and starts.
+7. it asks for the file name (command **51**: `espnewsauto.prg`, or
+   `espsamauto.prg` when 2 was chosen), loads it at `$0801` (command **53**)
+   and asks for the entry point (command **60**, parsed from the `SYS` in the
+   BASIC line);
+8. it jumps to the entry point: the PRG copies the menu to `$C000` and starts.
 
 > **Warning (historic bug):** the bootstrap must **not** call `CLR`
 > (`$a659`) or the BASIC relink routine (`$a533`) before jumping to the entry
@@ -395,7 +399,9 @@ Typical layout:
 
 ```
 /                              <- root: espnewsauto.prg and the folders
-├── espnewsauto.prg            <- full menu (loaded by the bootstrap)
+├── espnewsauto.prg            <- full menu (bootstrap choice 1)
+├── espsamauto.prg             <- menu + SAM talk (bootstrap choice 2)
+├── samplayer.prg              <- player SAM a $0801 (solo choice 2)
 ├── C64Music_safe_reloc/       <- SIDs relocated to $4000 (see below)
 ├── all_gif_koa_split/         <- .kla/.koa pictures
 ├── petscii-art/               <- .d64 files with PETSCII art (SEQ)
@@ -405,7 +411,7 @@ Typical layout:
 Practical notes:
 
 - **`espnewsauto.prg` must be in the root**: the bootstrap asks the ESP32 for
-  exactly that name.
+  exactly that name (or `espsamauto.prg` if 2 is chosen in the boot menu).
 - The **directory listing** is capped at **12032 bytes** (roughly 300 entries):
   beyond that the list is truncated, so that it cannot overwrite the SIDs at
   `$4000` or the code at `$C000`. Use subdirectories for large collections.
@@ -579,6 +585,8 @@ artifacts and are not versioned.
 | 8K ROM (whole menu in the EEPROM) | `acme -DCART=1 c64esp32cart.asm` | `c64esp8kROM.bin` |
 | PRG at `$C000` (manual start) | `acme -DCART=1 -DC400=1 c64esp32cart.asm` | `c64esp32menu_c000_cart.prg` |
 | Self-starting PRG from `$0801` | `acme -DCART=1 -DPRGAUTO=1 c64esp32cart.asm` | `espnewsauto.prg` |
+| SAM menu (boot choice 2) | `acme -DCART=1 -DPRGAUTO=1 -DSAM=1 c64esp32cart.asm` | `espsamauto.prg` |
+| SAM player a `$0801` | `acme samplayer.asm` | `samplayer.prg` |
 | Simulated PRG (no cartridge) | `acme c64esp32cart.asm` | `c64esp32menu.prg` |
 | 8K EPROM bootstrap | `acme bootstrap.asm` | `c64esp8kBOOT.bin` |
 | Debug bootstrap | `acme -DDBGBOOT=1 -o c64esp8kBOOT_dbg.bin bootstrap.asm` | `c64esp8kBOOT_dbg.bin` |

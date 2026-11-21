@@ -33,3 +33,19 @@ firmware_backup/
 
 # lock file KiCad
 *.lck
+
+# SAM: sorgenti scaricati (uso personale, vedere espSAM/fetch_sam.sh), non in git
+/c64esp32Cart/sam.c
+/c64esp32Cart/sam.h
+/c64esp32Cart/render.c
+/c64esp32Cart/render.h
+/c64esp32Cart/reciter.c
+/c64esp32Cart/reciter.h
+/c64esp32Cart/RenderTabs.h
+/c64esp32Cart/ReciterTabs.h
+/c64esp32Cart/SamTabs.h
+/c64esp32Cart/debug.c
+/c64esp32Cart/debug.h
+
+# build SAM: PRG del menu ridotto
+/espsamauto.prg

@@ -923,3 +923,37 @@ Compila: 87% flash / 21% RAM (`--build-property build.partitions=no_ota`).
 Nota: `bootsd` nella root e' un build vecchio (749 byte, senza menu) e non e'
 tracciato: si puo' cancellare, il sorgente `boot_sd.prg` si rigenera con
 `acme bootstrap_sd.asm`.
+
+### 16.4 Pulsante di reset della cartuccia (net iRST)
+
+Osservato su hardware: il pulsante **RESET del modulo ESP32** resetta anche la
+C64 (setup pulsa `GPIO21`) e la cartuccia riparte dal menu del bootstrap; il
+pulsante **sulla cartuccia** invece non faceva nulla.
+
+Analisi dell'hardware (`c64esp32crt1.1_kicad7/ESP32Hardware.kicad_pcb`, net del
+PCB):
+
+| Net | Collegato a |
+|---|---|
+| `iRST` | `SW1` (pulsante), `U5` pad 37 = **GPIO15** — e basta |
+| `oRST` | `U5` pad 27 = GPIO21, ingresso di `U7` (74LS14) -> C64 `/RESET` |
+
+Quindi il pulsante della cartuccia **non e' cablato al /RESET della C64**:
+senza firmware non puo' fare niente. Va gestito nell'ESP32.
+
+Implementazione (`c64esp32Cart/c64esp32Cart.ino`):
+
+- `pollResetButton()` chiamata a ogni giro del `loop`:
+  - **polling** con debounce (40 ms di livello basso continuo, poi riarmo),
+    niente `attachInterrupt`: l'ISR su GPIO15 (pin di strapping MTDO) era la
+    causa dei riavvii spuri durante l'audio a 11 kHz;
+  - alla pressione logga `RESET: pulsante della cartuccia premuto`, mette la
+    C64 in reset (`digitalWrite(oC64RST, !invert_Reset)`), aspetta 50 ms e fa
+    `ESP.restart()`;
+  - al riavvio `setup()` rimappa la EPROM (`CLED HIGH`) e ripulsa il reset
+    della C64 (250 ms) -> si riparte dal menu del bootstrap.
+- `isr_reset()` resta nel file ma non e' piu' agganciata (riferimento storico).
+- Limite noto: durante una frase SAM (`samPlay` blocca il `loop`) il pulsante
+  non viene letto; fuori da quei casi risponde subito.
+
+Compila 87% flash / 21% RAM, flashato.

@@ -102,6 +102,7 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 | microSD | on VSPI: `MOSI=23`, `MISO=19`, `SCK=18`, `CS=5` |
 | EXROM | driven by **GPIO2** (`CLED`) through a BC547: HIGH = EXROM low = EEPROM mapped |
 | C64 reset | `GPIO21` (`oC64RST`) through a buffer |
+| Reset button | net `iRST` -> **only** `GPIO15` (not wired to the C64 `/RESET`): the firmware polls it and restarts ESP32 + C64 |
 | C64 NMI | `GPIO32` |
 | Data bus | 74LS244 (`$DF00` on read) + shift register (`$DE00` on write) |
 | I/O1 / I/O2 | `GPIO35` / `GPIO36` (interrupts) |

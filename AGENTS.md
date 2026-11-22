@@ -270,6 +270,9 @@ SAM: testo news al C64, N byte  comando 118
 SAM: leggo le news in inglese/italiano
 SAM: 'pezzo' -> N campioni
 hb: N letture $DF00             ogni 2 s, solo se il C64 legge $DF00
+EXROM alto (comando 112)        il loader ha copiato il bootstrap a $C000
+EXROM basso (112 spurio...)     falso 112 (bus flottante), EPROM rimappata
+RESET: pulsante della cartuccia premuto   pulsante iRST (GPIO15)
 tx: timeout dal C64             sendByte non ha ricevuto l'ack
 SAM: comando N durante la frase, stop
 ```
@@ -498,8 +501,13 @@ PRG: `samplayer.prg` 1360, `sam_talk.prg` 1354, `sam_news.prg` 1357.
    2026-11-21**: tolto `delay(1500)+CLED LOW` dal setup; EXROM si alza solo
    col comando 112 (`exromRelease()`), senza timeout (con ESP32 alimentato
    via USB e C64 accesa dopo, la EPROM deve restare mappata).
-3. Ripristinare il **pulsante di reset** del PCB: reset contemporaneo di
-   ESP32 e C64 (l'ISR su GPIO15 era stato disattivato in via sperimentale).
+3. ~~Ripristinare il **pulsante di reset** del PCB~~ — **FATTO 2026-11-21**:
+   il pulsante (net `iRST` -> **solo** GPIO15 dell'ESP32, NON cablato al
+   /RESET della C64) ora e' letto in **polling con debounce 40 ms**
+   (`pollResetButton()` nel `loop`): tiene la C64 in reset (GPIO21) e fa
+   `ESP.restart()`; al riavvio il setup rimappa la EPROM e ripulsa il reset
+   della C64 -> si riparte dal menu del bootstrap. Niente interrupt su GPIO15
+   (pin di strapping MTDO, causava riavvii spuri durante l'audio).
 
 Karaoke SAM NEWS e race del comando 117: FATTI (vedi "Stato al 2026-11-21").
 Sotto, la lista storica:

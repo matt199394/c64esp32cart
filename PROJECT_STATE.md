@@ -20,8 +20,9 @@ il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md) (la serata del
 - **Prossimo lavoro**: (a) programmare la 27C512 con l'immagine 64K del
   bootstrap nuovo (`W27C512_c64esp8kBOOT.bin`, menu 1/2, sha256
   `15460daa...`); (b) provare la gestione EXROM del firmware (resta mappata
-  finche' non arriva il comando 112); (c) ripristinare il pulsante di reset
-  del PCB. Arretrati: fix cosmetico `_` nella lista directory, screenshot HELP,
+  finche' non arriva il comando 112); (c) ~~ripristinare il pulsante di
+  reset del PCB~~ (fatto: polling su GPIO15 + `ESP.restart()`).
+  Arretrati: fix cosmetico `_` nella lista directory, screenshot HELP,
   rotazione credenziali.
 - **Prima di tutto**: ruotare le credenziali ancora nella storia Git pubblica
   (password WiFi, API key OpenWeather e NewsAPI) e aggiornare `secrets.h`.

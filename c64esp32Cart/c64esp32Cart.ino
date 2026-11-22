@@ -304,6 +304,31 @@ static void exromRemap(const char *reason) {
   Serial.printf("EXROM basso (%s): EPROM di nuovo mappata a $8000\n", reason);
 }
 
+// Pulsante di reset della cartuccia (net iRST -> GPIO15).
+// Il pulsante NON e' cablato al /RESET della C64: deve essere il firmware a
+// resettare tutto. Si tiene la C64 in reset e si riavvia l'ESP32: al riavvio
+// setup() rimappa la EPROM (CLED HIGH), ripulsa il reset della C64 (GPIO21)
+// e la cartuccia riparte dal menu del bootstrap, esattamente come con il
+// pulsante RESET del modulo ESP32.
+// Lettura in POLLING con debounce: l'interrupt su GPIO15 (pin di strapping
+// MTDO, sensibile ai disturbi durante l'audio a 11 kHz) causava riavvii
+// dell'ESP32 a caso, per questo era stato disattivato.
+static void pollResetButton() {
+  static bool holdSeen = false;      // gia' visto un fronte di pressione
+  static uint32_t holdAt = 0;
+
+  bool low = (digitalRead(resetSwitch) == LOW);
+  if (!low) { holdSeen = false; return; }
+  if (!holdSeen) { holdSeen = true; holdAt = millis(); return; }
+  if (millis() - holdAt < 40) return;   // debounce: 40 ms di pressione
+
+  Serial.println("RESET: pulsante della cartuccia premuto");
+  Serial.flush();
+  digitalWrite(oC64RST, !invert_Reset);  // tengo la C64 in reset
+  delay(50);                             // finche' l'ESP32 si riavvia
+  ESP.restart();
+}
+
 void sendByte(byte b) {
   if (sendFailed) return;
   outByte(b);
@@ -1889,10 +1914,10 @@ void setup() {
   // define interrupts
   attachInterrupt(C64IO1, isr_io1, RISING);          // interrupt for io1, C64 writes data to io1 address space
   attachInterrupt(C64IO2, isr_io2, FALLING);         // interrupt for io2, c64 reads
-  // NOTA: l'interrupt di reset su GPIO15 (pin di strapping MTDO) causava
-  // riavvii dell'ESP32 -> setup() impulsa il RESET del C64 -> il C64 tornava
-  // al BASIC durante SAM TALK/NEWS. Disattivato in via sperimentale.
-  // attachInterrupt(resetSwitch, isr_reset, FALLING);  // interrupt for reset button
+  // NOTA: il pulsante di reset (GPIO15, net iRST) NON usa un interrupt: si
+  // legge in polling con debounce (pollResetButton nel loop). L'interrupt su
+  // GPIO15 (pin di strapping MTDO) causava riavvii dell'ESP32 a caso durante
+  // l'audio, per questo era stato disattivato.
 
   // define outputs
   pinMode(CLED, OUTPUT);
@@ -2638,6 +2663,9 @@ static int samReadByte() {
 // Main loop
 // ******************************************************************************
 void loop() {
+
+    // pulsante di reset della cartuccia (GPIO15): reset di ESP32 + C64
+    pollResetButton();
 
     if (dataFromC64){
     // Cattura SUBITO il comando: ch e' volatile e l'ISR lo riscrive ad ogni

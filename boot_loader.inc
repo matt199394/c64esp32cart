@@ -378,8 +378,8 @@ mprint  stx ptr1
         jmp .loop
 .done   rts
 
-msg_load_norm !pet "carico espnewsauto.prg", 13, 0
-msg_load_sam  !pet "carico espsamauto.prg", 13, 0
+msg_load_norm !pet "loading espnewsauto.prg", 13, 0
+msg_load_sam  !pet "loading espsamauto.prg", 13, 0
 
 !ifdef DBGBOOT {
 ; X = colore bordo, A = carattere PETSCII da stampare a schermo

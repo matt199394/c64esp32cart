@@ -121,7 +121,8 @@ e copiato in `$0400`/`$D800` da `copy_menu_screen`/`copy_menu_colors`.
 
 - cornice azzurra (screen code 64 orizzontale, 93 verticale, 43 angoli);
 - titolo `C64 ESP32 CARTRIDGE` giallo, `BY M.ANGELINI` grigio chiaro;
-- riga 15 in bianco: ci scrive `CARICO ESPNEWSAUTO.PRG` / `ESPSAMAUTO.PRG`
+- riga 15 in bianco: ci scrive `LOADING ESPNEWSAUTO.PRG` / `ESPSAMAUTO.PRG`
+  (tutto il testo del menu e' in inglese, come il resto del programma)
   (`$0286` = 1 prima di CHROUT, che scrive anche la color RAM);
 - dopo la modifica al layout: `tools/make_boot_menu.py && acme bootstrap.asm
   && tools/make_eprom_image.sh all c64esp8kBOOT.bin` e riprogrammare la 27C512.
@@ -581,7 +582,7 @@ Sotto, la lista storica:
    a. ritorno dalle news SAM: ora torna al menu (`MENU_INIT = $c003`), non
       piu' al BASIC. Il `$01=$37` resta: `main_init` non si chiama piu' e
       `restart` rimette da solo `$01=$36`.
-   b. menu di `bootsd`: `1) menu senza sam` / `2) menu con sam`, ognuno con
+   b. menu di `bootsd`: `1) menu without sam` / `2) menu with sam`, ognuno con
       la riga di dettaglio; tolta la riga "scrivi il testo da qui".
    c. SAM NEWS stampa a video il testo mentre SAM lo legge: il player riceve
       il testo (118) a `$A000` con lo stesso NMI di `receive_buffer`, poi lo

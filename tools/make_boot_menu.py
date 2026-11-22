@@ -74,21 +74,21 @@ def build():
 
     s.center(2, "C64 ESP32 CARTRIDGE", 7)      # giallo
     s.center(3, "BY M.ANGELINI", 15)           # grigio chiaro
-    s.center(5, "SCEGLI IL MENU DA CARICARE", 1)
+    s.center(5, "CHOOSE THE MENU TO LOAD", 1)
 
-    s.put(7, 5, "1) MENU SENZA SAM", 1)
+    s.put(7, 5, "1) MENU WITHOUT SAM", 1)
     s.put(8, 8, "NEWS, KOALA, SID, HELP", 3)   # ciano
-    s.put(10, 5, "2) MENU CON SAM", 1)
+    s.put(10, 5, "2) MENU WITH SAM", 1)
     s.put(11, 8, "SAM TALK, SAM NEWS", 3)
 
-    s.put(13, 5, "PREMI 1 O 2", 15)
+    s.put(13, 5, "PRESS 1 OR 2", 15)
 
-    # riga 15: qui il loader stampa "CARICO ESPNEWSAUTO.PRG" (CHROUT usa il
+    # riga 15: qui il loader stampa "LOADING ESPNEWSAUTO.PRG" (CHROUT usa il
     # colore che trova in color RAM, quindi la riga deve essere bianca)
     for x in range(1, COLS - 1):
         s.col[15 * COLS + x] = 1
 
-    s.put(20, 5, "EPROM 8K + SD ESP32", 11)
+    s.put(20, 5, "8K EPROM + ESP32 SD CARD", 11)
     return s
 
 

@@ -956,6 +956,11 @@ Implementazione (`c64esp32Cart/c64esp32Cart.ino`):
 - Limite noto: durante una frase SAM (`samPlay` blocca il `loop`) il pulsante
   non viene letto; fuori da quei casi risponde subito.
 
+**Lingua:** i testi del menu di avvio sono in **inglese** (come il resto del
+programma): `CHOOSE THE MENU TO LOAD`, `1) MENU WITHOUT SAM`,
+`2) MENU WITH SAM`, `PRESS 1 OR 2`, `LOADING ESPNEWSAUTO.PRG`,
+`8K EPROM + ESP32 SD CARD`.
+
 Compila 87% flash / 21% RAM, flashato.
 
 ### 16.5 Menu di avvio a schermo pieno + HELP della build SAM
@@ -974,7 +979,7 @@ template 40x25:
 - `boot_loader.inc`: `menu_boot` mette sfondo nero, bordo azzurro,
   `$cc=$01` (cursore non lampeggiante), `copy_menu_screen` +
   `copy_menu_colors`, attende `1`/`2`, poi `PLOT` a riga 15 colonna 6 e stampa
-  `CARICO ESPNEWSAUTO.PRG` / `CARICO ESPSAMAUTO.PRG`;
+  `LOADING ESPNEWSAUTO.PRG` / `LOADING ESPSAMAUTO.PRG`;
 - **CHROUT scrive anche la color RAM** usando `$0286` (colore corrente, dopo
   CINT e' 14 = azzurro): per avere la riga bianca il loader imposta `$0286=1`
   prima della PLOT;

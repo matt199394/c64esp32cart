@@ -325,7 +325,53 @@ I test della parte C64 (senza ESP32) sono in `tools/emu/` con il relativo
 README: ricezione del blocco con NMI spuri, stampa lunga con NMI audio a
 11 kHz, cosa azzera RAMTAS, verifica del driver NMI su CIA2.
 
+## Stato al 2026-11-22 20:00 (handover)
+
+**Provato su hardware in questa sessione** (dettagli in `SESSION_NOTES.md`
+sez. 16.1-16.6):
+
+- **27C512 programmata** con il bootstrap + menu di avvio nuovo (immagine 64K
+  `W27C512_c64esp8kBOOT.bin`, sha256
+  `c5b8f9275a98adc3019e947ea9a56855c7af0015349540ba96bd4ac6cc3f7ac3`,
+  read-back identico; banchi 0-7 uguali);
+- la C64 **autostarta sul menu di avvio a schermo pieno**: cornice azzurra,
+  `C64 ESP32 CARTRIDGE` giallo, `BY M.ANGELINI` grigio chiaro,
+  `CHOOSE THE MENU TO LOAD`, `1) MENU WITHOUT SAM`, `2) MENU WITH SAM`,
+  `PRESS 1 OR 2`, poi `LOADING ESPNEWSAUTO.PRG`;
+- voce `1` -> `espnewsauto.prg`: menu normale, NEWS con immagini PETSCII che
+  scorrono;
+- voce `2` -> `espsamauto.prg`: menu SAM a 5 voci, SAM TALK e SAM NEWS
+  funzionanti;
+- **pulsante di reset della cartuccia** operativo (reset ESP32 + C64, riparte
+  dal menu della EPROM);
+- **EXROM**: resta mappata finche' il loader non manda il comando 112, senza
+  timeout; un 112 spurio (bus flottante con C64 spenta) viene annullato se
+  entro 5 s non arriva il comando 51/53.
+
+**Da verificare / resta da fare:**
+
+1. HELP della build SAM (`helpTextSam`, comando 63 con `samVariant`) e righe
+   16/19/20/21 del menu SAM centrate: da guardare a video.
+2. `SAM: fonte news N '<nome>'` nel log scegliendo una fonte estera, e uscita
+   da SAM NEWS che deve tornare al menu (non al BASIC).
+3. Ruotare le credenziali nella storia Git pubblica; fix cosmetico `_` nella
+   lista directory; screenshot reale della pagina HELP; test rimasti
+   (uscita SID con SPACE, paginazione F1/F7, sfondi NEWS, Supermon, nomi
+   lunghi); poi PR `pi-work -> main`.
+
+**Struttura del menu di avvio** (nuova): `tools/make_boot_menu.py` genera
+`boot_menu.inc` (1024 screen + 1024 colori), incluso da `bootstrap.asm` /
+`bootstrap_sd.asm` **fuori** dal blocco `!pseudopc`; `boot_loader.inc` lo
+copia in `$0400`/`$D800` e stampa `LOADING ...` a riga 15 con `$0286=1`.
+
+---
+
 ## Stato al 2026-11-21 12:10 (handover)
+
+> Sezione storica: alcune note sono state superate dalla sessione del
+> 2026-11-22 (vedi sopra), in particolare karaoke e race del comando 117 che
+> risultano fatti.
+
 
 **Funziona su hardware:**
 - bootstrap (`BOOTSD` e EPROM), menu SAM a 5 voci, schermata fonti NEWS;

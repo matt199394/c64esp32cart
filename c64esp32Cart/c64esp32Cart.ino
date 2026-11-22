@@ -105,9 +105,6 @@ volatile bool dataFromC64 = false;
 // coldstart la stava ancora eseguendo.
 // ---------------------------------------------------------------------------
 static bool exromMapped = true;             // true = EPROM mappata a $8000
-static uint32_t exromMappedAt = 0;          // millis() dell'ultimo "tieni mappata"
-#define EXROM_FALLBACK_MS 60000UL           // rete di sicurezza se nessuno
-                                            // manda 112 (C64 senza cartuccia)
 
 // ---------------------------------------------------------------------------
 // SAM: modalita' "parla" (build espsamauto.prg scelta nel menu del bootstrap)
@@ -1888,7 +1885,6 @@ void setup() {
   pinMode(CLED, OUTPUT);
   digitalWrite(CLED, HIGH);        // EXROM basso: EPROM mappata a $8000
   exromMapped = true;
-  exromMappedAt = millis();
   pinMode(oC64D0, OUTPUT);
   pinMode(oC64D1, OUTPUT);
   pinMode(oC64D2, OUTPUT);
@@ -1962,7 +1958,8 @@ void setup() {
   // del bootstrap non ha copiato se' stesso a $C000 e non manda il comando
   // 112 (case 112 -> exromRelease). Il vecchio delay(1500)+CLED LOW era una
   // scommessa sul fatto che la C64 avesse gia' finito il coldstart.
-  exromMappedAt = millis();
+  // Nessun timeout: se l'ESP32 e' alimentato via USB e la C64 viene accesa
+  // dopo, la EPROM deve essere ancora mappata per far partire la cartuccia.
   Serial.println("EXROM basso: EPROM mappata, attendo il comando 112");
   Serial.println("");
   Serial.println("done!");
@@ -3211,13 +3208,6 @@ void loop() {
       // SOLO quando il loop e' fermo, cosi' D7 resta basso durante l'elaborazione
       // del comando e il parametro arriva solo quando il firmware e' pronto.
       outByte(0xFF);
-    }
-
-    // rete di sicurezza: se nessuno manda 112 (C64 avviata senza cartuccia,
-    // J3 chiuso, loader che non parte) non lasciamo una ROM mappata a
-    // $8000-$9FFF per sempre.
-    if (exromMapped && (millis() - exromMappedAt) > EXROM_FALLBACK_MS) {
-      exromRelease("timeout, nessun comando 112");
     }
 
     // diagnostica: ogni 2 s dice se il C64 sta leggendo $DF00 (in attesa)

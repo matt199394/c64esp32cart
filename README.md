@@ -319,10 +319,10 @@ On boot the firmware:
 2. opens the serial port (115200) and, if configured, connects to WiFi
    (**non-blocking**: 15 s timeout, then it moves on);
 3. mounts the SD card, scans the current directory and prepares the Koala list;
-4. EXROM resta **basso** (EEPROM mapped) until the loader sends command
-   `112`; there is no timed fallback any more. If `112` never arrives within
-   60 s (C64 booted without the cartridge, `J3` installed) the firmware
-   raises EXROM anyway and logs `EXROM alto (timeout...)`.
+4. EXROM stays **low** (EEPROM mapped) until the loader sends command `112`,
+   with **no timeout**: when the ESP32 is powered from USB and the C64 is
+   switched on later, the EEPROM must still be mapped or the cartridge would
+   not boot. Only command `112` raises EXROM (log: `EXROM alto (comando 112)`).
 
 Useful serial log (115200): requested file name,
 `PRG: load $xxxx, entry $xxxx`, `SID: load $xxxx, N byte`, SD errors.

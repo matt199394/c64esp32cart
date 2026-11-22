@@ -896,16 +896,16 @@ C64 al BASIC senza cartuccia.
 
 Modifiche in `c64esp32Cart/c64esp32Cart.ino`:
 
-- `exromMapped` / `exromMappedAt` e funzione `exromRelease(reason)` che alza
-  EXROM (`CLED LOW`) una volta sola e logga
-  `EXROM alto (<motivo>): $8000-$9FFF torna RAM`;
+- `exromMapped` e funzione `exromRelease(reason)` che alza EXROM (`CLED LOW`)
+  una volta sola e logga `EXROM alto (<motivo>): $8000-$9FFF torna RAM`;
 - setup: `CLED HIGH` (EPROM mappata) resta, `delay(1500)+CLED LOW` **rimossi**;
   al loro posto log `EXROM basso: EPROM mappata, attendo il comando 112`;
 - `case 112` usa `exromRelease("comando 112")`;
-- rete di sicurezza nel `loop`: se il 112 non arriva entro
-  `EXROM_FALLBACK_MS` = 60 s, `exromRelease("timeout, nessun comando 112")`.
-  Alzare EXROM piu' tardi e' innocuo: il loader e il menu girano gia' a
-  `$C000` e non leggono piu' `$8000`.
+- **niente timeout** (prima avevo messo un fallback a 60 s poi tolto): in
+  banco l'ESP32 e' alimentato via USB e la C64 si accende dopo; con un
+  timeout la EPROM spariva e la cartuccia non partiva piu'. Alzare EXROM a
+  mano (a boot ultimato) sarebbe comunque innocuo, il loader e il menu
+  girano gia' a `$C000`.
 
 Compila: 87% flash / 21% RAM (`--build-property build.partitions=no_ota`).
 

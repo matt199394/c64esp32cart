@@ -197,8 +197,9 @@ C64 richiede refactoring o spostamento di codice.
 Il firmware tiene `CLED HIGH` (EXROM basso, EPROM mappata) dal setup e la
 alza **solo** quando il loader manda il comando 112, cioe' dopo aver copiato
 se' stesso a `$C000`. Il vecchio `delay(1500)` + `CLED LOW` e' stato tolto
-(poteva togliere la ROM mentre la C64 la stava ancora leggendo). Fallback: se
-il 112 non arriva entro 60 s il firmware alza EXROM e lo logga.
+(poteva togliere la ROM mentre la C64 la stava ancora leggendo). Nessun
+timeout: con l'ESP32 alimentato via USB la EPROM deve restare mappata anche
+se la C64 viene accesa minuti dopo.
 
 ---
 

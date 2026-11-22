@@ -494,9 +494,10 @@ PRG: `samplayer.prg` 1360, `sam_talk.prg` 1354, `sam_news.prg` 1357.
    `W27C512_c64esp8kBOOT.bin` (bootstrap con menu 1/2, replicato negli 8
    banchi, sha256 `15460daa...`) e' pronta e verificata; resta solo da
    **programmare la 27C512** con `minipro` (vedi comandi sopra).
-2. ~~Firmware: tenere EXROM basso all'avvio~~ — **FATTO 2026-11-21**: tolto
-   `delay(1500)+CLED LOW` dal setup, ora EXROM si alza solo col comando 112
-   (`exromRelease()`), con fallback a 60 s. Da provare su hardware.
+2. ~~Firmware: tenere EXROM basso all'avvio~~ — **FATTO E FLASHATO
+   2026-11-21**: tolto `delay(1500)+CLED LOW` dal setup; EXROM si alza solo
+   col comando 112 (`exromRelease()`), senza timeout (con ESP32 alimentato
+   via USB e C64 accesa dopo, la EPROM deve restare mappata).
 3. Ripristinare il **pulsante di reset** del PCB: reset contemporaneo di
    ESP32 e C64 (l'ISR su GPIO15 era stato disattivato in via sperimentale).
 

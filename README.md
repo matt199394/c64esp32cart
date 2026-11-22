@@ -87,7 +87,9 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 - **Menu template** stored at `$9800-$9FCF` and reloaded when a SID or a PRG
   overwrites it.
 - **SAM TALK** (SAM build): type a line, press RETURN and the ESP32 speaks it
-  through the C64; RUN/STOP goes back to the menu.
+  through the C64; RUN/STOP goes back to the menu. SAM is **commercial
+  software** and is not part of this repository — see the notice in
+  [SAM: the C64 talks](#sam-the-c64-talks-talk--news).
 - **SAM NEWS** (SAM build): pick one of the news sources, the ESP32 downloads
   the headlines, **prints the same text on the C64 screen** and reads it out
   loud; the sentence being spoken is highlighted in yellow (karaoke), any key
@@ -371,6 +373,19 @@ arduino-cli compile --fqbn esp32:esp32:mhetesp32minikit audio_test   # 4-bit aud
 ```
 
 ---
+
+> ### ⚠️ SAM is commercial software
+>
+> SAM (**Software Automatic Mouth**) and its source code are **proprietary
+> software**; all rights remain with their respective owners (originally
+> *Don't Ask Software* / *SoftVoice*). SAM is **not** included in this
+> repository, is **not** redistributed here and is **not** covered by any
+> licence granted by this project: it **must not be used for commercial
+> purposes** without the express authorisation of the rights holder. Copying
+> the sources into a local build (see [`SAM_SOURCES.md`](SAM_SOURCES.md)) is
+> the user's own responsibility — this project uses them for personal,
+> non-commercial use only. Everything else in this repository is the author's
+> own code.
 
 ## SAM: the C64 talks (TALK / NEWS)
 
@@ -783,6 +798,14 @@ The SAM player (`samplayer.prg`, loaded at `$0801` by the menu) uses:
 - NEWS sources: public RSS feeds of the respective publishers;
   weather: OpenWeather.
 
-Private repository. Never commit `c64esp32Cart/secrets.h` or
-`firmware_backup/` (they contain WiFi credentials, API keys and calibration
-data).
+All the other code in this repository (ESP32 firmware, C64 assembly, tools,
+schematics) is the author's own work, published for personal/hobby use.
+
+**Third-party, not included:** SAM (Software Automatic Mouth — sam.c, sam.h,
+render.*, reciter.*, \*Tabs.h, debug.\*) is **commercial software** belonging to
+its rights holders: it is **not** part of this repository, is **not**
+redistributed with it and **cannot be used for commercial purposes** without
+the authorisation of the owner. See [`SAM_SOURCES.md`](SAM_SOURCES.md).
+
+Private files. Never commit `c64esp32Cart/secrets.h` or `firmware_backup/`
+(they contain WiFi credentials, API keys and calibration data).

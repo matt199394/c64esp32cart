@@ -1068,3 +1068,21 @@ Aggiunte al `README.md`:
   `ENABLE_SAM`, 88% con SAM / 85% senza);
 - **memory layout**: aggiunte le aree del player SAM (`$A000`, `$A500`,
   `$0478`/`$D878`).
+
+### 16.9 Avvertenza legale su SAM
+
+Richiesta di Matteo: specificare nel README che SAM resta software commerciale,
+non puo' essere incluso nel repository ne' usato a fini commerciali senza
+autorizzazione del proprietario dei diritti.
+
+- `README.md`: riquadro in testa alla sezione "SAM: the C64 talks (TALK /
+  NEWS)" (proprieta', non incluso, non ridistribuito, divieto d'uso
+  commerciale, responsabilita' di chi copia i sorgenti in locale) + paragrafo
+  **"Third-party, not included"** in *Credits*, che chiarisce anche che tutto
+  il resto del codice e' dell'autore; rimando dal bullet `SAM TALK` di
+  *Features*.
+- `SAM_SOURCES.md`: nuova sezione **"Avvertenza legale (leggere prima di
+  copiare i file)"** con gli stessi punti, piu' il motivo per cui il firmware
+  compila anche senza SAM (`ENABLE_SAM`).
+- `AGENTS.md`: la regola su SAM dice esplicitamente "commerciale e
+  proprietario" e vieta l'uso commerciale senza autorizzazione.

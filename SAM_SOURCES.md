@@ -5,10 +5,23 @@ Automatic Mouth)** in esecuzione sull'ESP32: i campioni vengono generati a
 11025 Hz, ridotti a 4 bit e mandati alla C64 che li suona su `$D418` via NMI
 (comandi ESP32 113-119).
 
-SAM però è **software commerciale** (SoftVoice / Don't Ask Software): per
-questo i suoi sorgenti **non sono versionati** in questo repository pubblico,
-che viene usato solo a livello personale. Sono elencati in `.gitignore` e non
-devono mai finire in un commit.
+## Avvertenza legale (leggere prima di copiare i file)
+
+SAM è **software commerciale e proprietario**: tutti i diritti restano del
+legittimo proprietario (all'origine *Don't Ask Software* / *SoftVoice*).
+
+- i suoi sorgenti **non possono essere inclusi in questo repository** (né in
+  nessun fork/PR/issue): sono in `.gitignore` e non devono mai finire in un
+  commit;
+- **non possono essere usati a fini commerciali** senza l'autorizzazione
+  esplicita del proprietario dei diritti;
+- copiare i sorgenti in una build locale è responsabilità di chi lo fa; questo
+  progetto li usa **solo a livello personale e non commerciale**;
+- il resto del codice di questo repository è dell'autore del progetto.
+
+Per questo il firmware è costruito in modo da compilare anche **senza** SAM
+(vedi `ENABLE_SAM` più sotto): chi clona il repository ottiene una versione
+senza voce e senza alcun sorgente di terzi.
 
 Questo file spiega come rimetterli a posto per compilare la voce, e come
 compilare **senza** SAM quando non servono.

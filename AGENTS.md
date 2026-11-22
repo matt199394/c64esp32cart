@@ -188,9 +188,11 @@ cd audio_test && acme c64_audio_test.asm
 ## SAM (voce) — sorgenti commerciali
 
 - SAM (**Software Automatic Mouth**, SoftVoice / Don't Ask Software) e'
-  software **commerciale**: `sam.c/.h`, `render.*`, `reciter.*`, `*Tabs.h`,
-  `debug.*` **non sono nel repository** (sono in `.gitignore`) e non vanno mai
-  committati.
+  software **commerciale e proprietario**: `sam.c/.h`, `render.*`, `reciter.*`,
+  `*Tabs.h`, `debug.*` **non sono nel repository** (sono in `.gitignore`) e non
+  vanno mai committati, ne' usati a **fini commerciali** senza l'autorizzazione
+  del proprietario dei diritti. Il progetto li usa solo a livello personale;
+  `SAM_SOURCES.md` riporta l'avvertenza completa.
 - Per compilare la voce si copiano a mano in `c64esp32Cart/` seguendo
   **`SAM_SOURCES.md`** (elenco file, provenienza e due patch obbligatorie);
   `tools/check_sam_sources.sh` controlla presenza e patch.

@@ -2262,6 +2262,34 @@ static const char helpText[] =
   " UP/DOWN SELECT - RETURN ENTER\r"
   " PRESS A KEY TO RETURN TO MENU\r";
 
+// Stessa pagina per la build SAM (espsamauto.prg): il menu ha 5 voci
+// (SD CARD, HELP, BASIC, SAM TALK, SAM NEWS) e non ci sono SUPERMON,
+// CLOCK/WEATHER, KOALA, NEWS, SLIDESHOW.
+static const char helpTextSam[] =
+  "\x93\x9e"
+  "+--------------------------------------+\r"
+  "      C64 ESP32 CARTRIDGE - HELP\r"
+  "+--------------------------------------+\r"
+  "\x05"
+  " SD CARD   LOAD PRG/GAMES, SID, KOALA\r"
+  "           F1/F7 PAGE, RETURN OPEN\r"
+  "           Q = QUIT DIRECTORY\r"
+  " HELP      THIS PAGE\r"
+  " BASIC     RETURN TO BASIC\r"
+  " SAM TALK  TYPE A LINE, PRESS RETURN\r"
+  "           SAM READS IT, RUN/STOP MENU\r"
+  " SAM NEWS  PICK A SOURCE FROM 10\r"
+  "           TEXT ON SCREEN, SAM READS IT\r"
+  "           A KEY STOPS THE SPEECH\r"
+  "\x9e"
+  " SID       LOAD A SID FROM SD FIRST\r"
+  "           THEN NEWS/SLIDES CAN USE IT\r"
+  " SD: /PETSCII-ART (.D64)\r"
+  "     /PETSCII-SEQ (.SEQ)\r"
+  "\x9f"
+  " UP/DOWN SELECT - RETURN ENTER\r"
+  " PRESS A KEY TO RETURN TO MENU\r";
+
 void buildKoalaList() {
   // Se la directory e' gia' stata scandita da buildDirectoryList(), la lista
   // e' pronta: evitiamo una seconda lettura della SD (causava 10-20 s di
@@ -2793,12 +2821,16 @@ void loop() {
 
     //========================================================
       case 63:{          // 63 = pagina HELP (stream PETSCII a $A000)
-        unsigned int helpLen = sizeof(helpText) - 1;
+        // Il testo dipende dalla variante scelta nel menu del bootstrap: la
+        // build SAM ha 5 voci e non ha SUPERMON/CLOCK/KOALA/NEWS/SLIDESHOW.
+        const char *help = samVariant ? helpTextSam : helpText;
+        unsigned int helpLen = (samVariant ? sizeof(helpTextSam)
+                                           : sizeof(helpText)) - 1;
         sendByte((byte)helpLen);
         sendByte((byte)(helpLen >> 8));
         sendByte(0x00);
         sendByte(0xA0);
-        for (unsigned int i = 0; i < helpLen; i++) sendByte(helpText[i]);
+        for (unsigned int i = 0; i < helpLen; i++) sendByte(help[i]);
         break;}
 
     //========================================================

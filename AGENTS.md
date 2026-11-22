@@ -111,6 +111,24 @@ acme -DDBGBOOT=1 -o c64esp8kBOOT_dbg.bin bootstrap.asm
   checksum a 16 bit del PRG (atteso `5A47` per `espnewsauto.prg`), quindi
   attesa di un tasto prima del salto.
 
+### Schermata del menu di avvio (EPROM)
+
+La schermata del menu di avvio non e' piu' stampata con CHROUT: e' un template
+40x25 (1024 screen code + 1024 colori) generato da `tools/make_boot_menu.py`
+in `boot_menu.inc`, incluso da `bootstrap.asm`/`bootstrap_sd.asm` **fuori** dal
+blocco `!pseudopc` (cosi' il loader la legge dall'indirizzo reale: EPROM o PRG)
+e copiato in `$0400`/`$D800` da `copy_menu_screen`/`copy_menu_colors`.
+
+- cornice azzurra (screen code 64 orizzontale, 93 verticale, 43 angoli);
+- titolo `C64 ESP32 CARTRIDGE` giallo, `BY M.ANGELINI` grigio chiaro;
+- riga 15 in bianco: ci scrive `CARICO ESPNEWSAUTO.PRG` / `ESPSAMAUTO.PRG`
+  (`$0286` = 1 prima di CHROUT, che scrive anche la color RAM);
+- dopo la modifica al layout: `tools/make_boot_menu.py && acme bootstrap.asm
+  && tools/make_eprom_image.sh all c64esp8kBOOT.bin` e riprogrammare la 27C512.
+- test senza hardware: `x64sc -warp -cart8 c64esp8kBOOT.bin -limitcycles
+  3000000 -exitscreenshot /tmp/boot.png` (il menu appare e resta in attesa del
+  tasto: senza ESP32 si ferma dopo la scelta).
+
 ### C64 ROM cartuccia
 
 ```bash
@@ -223,7 +241,9 @@ git push origin pi-work
 - menu grafico generato dall'ESP32 (comando 64): cornice, titolo centrato,
   voci a sinistra, color wash sulla voce selezionata, frecce SU/GIU + RETURN;
   il color wash non cambia il colore dei bordi
-- HELP in inglese (comando 63) con descrizione di tutte le funzioni,
+- HELP in inglese (comando 63) con descrizione di tutte le funzioni; due testi:
+  uno per il menu normale e uno per la build SAM (`helpTextSam`: 5 voci, niente
+  SUPERMON/CLOCK/KOALA/NEWS/SLIDESHOW),
   `Q = QUIT DIRECTORY` e avviso di caricare prima il SID da SD
 - tutto il testo visibile del programma e' in inglese
 - BASIC ROM disattivata nel menu per usare `$A000-$BFFF` come RAM

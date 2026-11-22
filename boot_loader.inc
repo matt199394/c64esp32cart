@@ -288,16 +288,19 @@ name_sam    !byte 5,19,16,19,1,13,1,21,20,15,46,16,18,7,128      ; espsamauto.pr
 ; ---------------------------------------------------------------------------
 ;  Menu di avvio: 1 = menu normale, 2 = SAM
 ;  (gira a $C000 con la EPROM ancora mappata: non usa $8000-$9FFF)
+;  La schermata (cornice, titolo giallo, sottotitolo grigio) e' un template
+;  40x25 generato da tools/make_boot_menu.py (boot_menu.inc, 1024+1024 byte)
+;  e incluso nella EPROM: qui si copia in $0400 e nella color RAM $D800.
 ; ---------------------------------------------------------------------------
 menu_boot
         lda #$00
         sta $d021                           ; sfondo nero
         lda #$0e
         sta $d020                           ; bordo azzurro
-        jsr $e544                           ; CLR
-        ldx #<msg_menu
-        ldy #>msg_menu
-        jsr mprint
+        lda #1
+        sta $cc                             ; cursore non lampeggiante
+        jsr copy_menu_screen
+        jsr copy_menu_colors
 
         lda #0
         sta variant
@@ -309,12 +312,11 @@ menu_boot
         bne .wait
         lda #1
         sta variant
-.show   lda variant
-        clc
-        adc #$31                            ; '1' o '2' dopo "scelta: "
-        jsr $ffd2
-        lda #13
-        jsr $ffd2
+.show   lda #1                              ; colore del testo (CHROUT scrive
+        sta $0286                           ; anche la color RAM): bianco
+        ldx #15                             ; PLOT: riga 15, colonna 6
+        ldy #6
+        jsr $e50c
         lda variant                         ; conferma a video di cosa si carica
         beq .norm
         ldx #<msg_load_sam
@@ -323,6 +325,45 @@ menu_boot
 .norm   ldx #<msg_load_norm
         ldy #>msg_load_norm
         jmp mprint
+
+; copia X pagine da (ptr1) a (ptr2)
+copy_page
+        ldy #0
+.pg     lda (ptr1),y
+        sta (ptr2),y
+        iny
+        bne .pg
+        inc ptr1+1
+        inc ptr2+1
+        dex
+        bne copy_page
+        rts
+
+; template del menu: 1024 byte (4 pagine) dall'EPROM alla screen RAM
+copy_menu_screen
+        lda #<boot_menu_screen
+        sta ptr1
+        lda #>boot_menu_screen
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$04
+        sta ptr2+1
+        ldx #4
+        jmp copy_page
+
+; colori del menu: 1024 byte dall'EPROM alla color RAM $D800
+copy_menu_colors
+        lda #<boot_menu_colors
+        sta ptr1
+        lda #>boot_menu_colors
+        sta ptr1+1
+        lda #$00
+        sta ptr2
+        lda #$d8
+        sta ptr2+1
+        ldx #4
+        jmp copy_page
 
 ; stampa la stringa puntata da X/Y (PETSCII, terminatore 0)
 mprint  stx ptr1
@@ -339,15 +380,6 @@ mprint  stx ptr1
 
 msg_load_norm !pet "carico espnewsauto.prg", 13, 0
 msg_load_sam  !pet "carico espsamauto.prg", 13, 0
-
-msg_menu
-        !pet 13, 13
-        !pet "    c64 esp32 cart", 13, 13
-        !pet "  1) menu senza sam", 13
-        !pet "     news, koala, sid, help", 13, 13
-        !pet "  2) menu con sam", 13
-        !pet "     sam talk, sam news", 13, 13
-        !pet "  scelta: ", 0
 
 !ifdef DBGBOOT {
 ; X = colore bordo, A = carattere PETSCII da stampare a schermo

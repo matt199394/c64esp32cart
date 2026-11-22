@@ -137,6 +137,11 @@ payload_rom = *
 payload_end = *
 BOOT_LEN = payload_end - payload_rom
 
+; schermata del menu di avvio (1024 byte screen code + 1024 colori), generata
+; da tools/make_boot_menu.py. Sta FUORI dal blocco pseudopc: e' un dato che il
+; loader legge dall'indirizzo in cui viene assemblato (EPROM o PRG su SD).
+!src "boot_menu.inc"
+
 ; riempie fino a 8k
         * = $9fff
         !byte 0

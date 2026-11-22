@@ -957,3 +957,39 @@ Implementazione (`c64esp32Cart/c64esp32Cart.ino`):
   non viene letto; fuori da quei casi risponde subito.
 
 Compila 87% flash / 21% RAM, flashato.
+
+### 16.5 Menu di avvio a schermo pieno + HELP della build SAM
+
+Richiesta di Matteo: cornice e colori come gli altri menu, titolo
+`C64 ESP32 CARTRIDGE` centrato in giallo, sotto `BY M.ANGELINI` in grigio
+chiaro, testi italiani; e HELP della build **con SAM** allineato alle sue 5 voci
+(era ancora quello del menu completo).
+
+**Menu di avvio.** Prima era stampato con CHROUT (`msg_menu`), adesso e' un
+template 40x25:
+
+- `tools/make_boot_menu.py` -> `boot_menu.inc`: 1024 byte di screen code +
+  1024 di colori (padding a 1024 per copiare 4 pagine intere sia in
+  `$0400-$07FF` sia in `$D800-$DBFF`, entrambe aree da 1K);
+- `boot_loader.inc`: `menu_boot` mette sfondo nero, bordo azzurro,
+  `$cc=$01` (cursore non lampeggiante), `copy_menu_screen` +
+  `copy_menu_colors`, attende `1`/`2`, poi `PLOT` a riga 15 colonna 6 e stampa
+  `CARICO ESPNEWSAUTO.PRG` / `CARICO ESPSAMAUTO.PRG`;
+- **CHROUT scrive anche la color RAM** usando `$0286` (colore corrente, dopo
+  CINT e' 14 = azzurro): per avere la riga bianca il loader imposta `$0286=1`
+  prima della PLOT;
+- il template sta **fuori** dal blocco `!pseudopc $c000` in `bootstrap.asm` /
+  `bootstrap_sd.asm`: il loader lo legge dal suo indirizzo reale (EPROM
+  `$82xx` oppure PRG caricato dalla SD), come `payload_rom` per il codice.
+  Inserito dopo `BOOT_LEN` per non alterarlo.
+- dimensioni: loader+template stanno in ~2,1 KB degli 8K della EPROM;
+  `boot_sd.prg` passa da 743 a 2718 byte.
+- prova in emulatore (senza ESP32): `x64sc -cart8 c64esp8kBOOT.bin`, con
+  `-keybuf "\x31"`/`"\x32"` per vedere la riga `CARICO ...`.
+
+**HELP SAM.** Aggiunto `helpTextSam` in `c64esp32Cart.ino`; `case 63` sceglie il
+testo in base a `samVariant` (impostato dal comando 113, cioe' prima che il menu
+possa chiedere l'HELP). Elenca SD CARD, HELP, BASIC, SAM TALK, SAM NEWS;
+niente SUPERMON, CLOCK/WEATHER, KOALA, NEWS, SLIDESHOW.
+
+Compila 87% flash / 21% RAM, flashato.

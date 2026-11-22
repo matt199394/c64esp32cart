@@ -2107,10 +2107,11 @@ static void buildMenuScreen() {
       "SD CARD", "HELP", "BASIC", "SAM TALK", "SAM NEWS"
     };
     for (int i = 0; i < 5; i++) menuLeft(6 + i, 8, sitems[i], 1);
-    menuLeft(16, 8, "UP/DOWN SELECT - RETURN ENTER", 15);
-    menuLeft(19, 8, "SAM TALK: TYPE AND PRESS RETURN", 3);
-    menuLeft(20, 8, "SAM NEWS: PICK THE SOURCE", 3);
-    menuLeft(21, 8, "TEXT ON SCREEN, RUN/STOP STOPS", 3);
+    // righe di aiuto centrate (prima a colonna 8: troppo a destra)
+    menuCenter(16, "UP/DOWN SELECT - RETURN ENTER", 15);
+    menuCenter(19, "SAM TALK: TYPE AND PRESS RETURN", 3);
+    menuCenter(20, "SAM NEWS: PICK THE SOURCE", 3);
+    menuCenter(21, "TEXT ON SCREEN, RUN/STOP STOPS", 3);
   } else {
     static const char *items[] = {
       "SD CARD", "SUPERMON", "HELP", "CLOCK / WEATHER", "BASIC",

@@ -998,3 +998,19 @@ possa chiedere l'HELP). Elenca SD CARD, HELP, BASIC, SAM TALK, SAM NEWS;
 niente SUPERMON, CLOCK/WEATHER, KOALA, NEWS, SLIDESHOW.
 
 Compila 87% flash / 21% RAM, flashato.
+
+### 16.6 Menu SAM: righe di aiuto centrate
+
+Le quattro righe di aiuto del menu SAM (righe 16, 19, 20, 21) erano a colonna 8
+e sbilanciate a destra. Ora usano `menuCenter()`:
+
+| riga | testo | colonna |
+|---|---|---|
+| 16 | UP/DOWN SELECT - RETURN ENTER | 5 |
+| 19 | SAM TALK: TYPE AND PRESS RETURN | 4 |
+| 20 | SAM NEWS: PICK THE SOURCE | 7 |
+| 21 | TEXT ON SCREEN, RUN/STOP STOPS | 4 |
+
+`tools/render_menu.py` ora rispecchia anche la build SAM (`menu-main-sam.png`)
+e il suo HELP (`menu-help-sam.png`), cosi' si possono confrontare i render con
+le foto reali.

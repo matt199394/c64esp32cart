@@ -168,6 +168,23 @@ def menu_main():
     return s
 
 
+def menu_main_sam():
+    """Menu della build SAM (espsamauto.prg, -DSAM=1): 5 voci."""
+    s = Screen()
+    s.frame()
+    s.center(2, "C64 ESP32 CARTRIDGE", 7)
+    s.center(3, "BY M.ANGELINI", 15)
+    s.left(5, 8, "MAIN MENU", 3)
+    items = ["SD CARD", "HELP", "BASIC", "SAM TALK", "SAM NEWS"]
+    for i, item in enumerate(items):
+        s.left(6 + i, 8, item, 13 if i == 0 else 1)
+    s.center(16, "UP/DOWN SELECT - RETURN ENTER", 15)
+    s.center(19, "SAM TALK: TYPE AND PRESS RETURN", 3)
+    s.center(20, "SAM NEWS: PICK THE SOURCE", 3)
+    s.center(21, "TEXT ON SCREEN, RUN/STOP STOPS", 3)
+    return s
+
+
 def menu_news_source():
     s = Screen()
     s.frame()
@@ -285,8 +302,39 @@ def menu_help():
     return s
 
 
+def menu_help_sam():
+    """helpTextSam dell'ESP32 (comando 63, variante SAM)."""
+    s = Screen()
+    rows = [
+        ("+--------------------------------------+", 1),
+        ("      C64 ESP32 CARTRIDGE - HELP", 1),
+        ("+--------------------------------------+", 1),
+        (" SD CARD   LOAD PRG/GAMES, SID, KOALA", 3),
+        ("           F1/F7 PAGE, RETURN OPEN", 3),
+        ("           Q = QUIT DIRECTORY", 3),
+        (" HELP      THIS PAGE", 3),
+        (" BASIC     RETURN TO BASIC", 3),
+        (" SAM TALK  TYPE A LINE, PRESS RETURN", 3),
+        ("           SAM READS IT, RUN/STOP MENU", 3),
+        (" SAM NEWS  PICK A SOURCE FROM 10", 3),
+        ("           TEXT ON SCREEN, SAM READS IT", 3),
+        ("           A KEY STOPS THE SPEECH", 3),
+        (" SID       LOAD A SID FROM SD FIRST", 1),
+        ("           THEN NEWS/SLIDES CAN USE IT", 1),
+        (" SD: /PETSCII-ART (.D64)", 1),
+        ("     /PETSCII-SEQ (.SEQ)", 1),
+        (" UP/DOWN SELECT - RETURN ENTER", 15),
+        (" PRESS A KEY TO RETURN TO MENU", 15),
+    ]
+    for i, (text, color) in enumerate(rows):
+        s.left(i, 0, text, color)
+    return s
+
+
 SCREENS = {
     "menu-main.png": menu_main,
+    "menu-main-sam.png": menu_main_sam,
+    "menu-help-sam.png": menu_help_sam,
     "menu-news-source.png": menu_news_source,
     "menu-news-background.png": menu_news_background,
     "menu-clock-weather.png": menu_weather,

@@ -105,6 +105,10 @@ volatile bool dataFromC64 = false;
 // coldstart la stava ancora eseguendo.
 // ---------------------------------------------------------------------------
 static bool exromMapped = true;             // true = EPROM mappata a $8000
+static bool bootPending = false;            // 112 ricevuto, aspettiamo il 51
+static uint32_t bootPendingAt = 0;
+#define BOOT_CONFIRM_MS 5000UL              // se dopo il 112 non arriva 51/53,
+                                            // il 112 era rumore sul bus
 
 // ---------------------------------------------------------------------------
 // SAM: modalita' "parla" (build espsamauto.prg scelta nel menu del bootstrap)
@@ -289,6 +293,15 @@ static void exromRelease(const char *reason) {
   digitalWrite(CLED, LOW);
   exromMapped = false;
   Serial.printf("EXROM alto (%s): $8000-$9FFF torna RAM\n", reason);
+}
+
+// Ri-mappa la EPROM (CLED HIGH -> EXROM basso). Serve se il 112 era un falso
+// positivo: con la C64 spenta il bus flottante genera comandi a caso.
+static void exromRemap(const char *reason) {
+  if (exromMapped) return;
+  digitalWrite(CLED, HIGH);
+  exromMapped = true;
+  Serial.printf("EXROM basso (%s): EPROM di nuovo mappata a $8000\n", reason);
 }
 
 void sendByte(byte b) {
@@ -2668,6 +2681,7 @@ void loop() {
     //========================================================
       case 51:{         // 51 = receive string in inbuffer[i] 
    
+  bootPending = false;   // il boot e' reale: il 112 era buono
   int i = 0;
 
   while (ch != 128 && i < 200) {
@@ -2793,6 +2807,7 @@ void loop() {
       case 53:{          // 53 = file from ESP32 to c64
       sidFile:
       sendFile:
+      bootPending = false;
       if (strcmp(inbuffer, "/..") == 0) {
         enterParentDirectory();
         buildDirectoryList();
@@ -3195,6 +3210,8 @@ void loop() {
       case 112:{        // 112 = bootstrap: EXROM alto (EPROM $8000 off)
         samVariant = false;   // nuovo avvio: niente variante SAM "ereditata"
         exromRelease("comando 112");
+        bootPending = true;   // conferma: il loader manda subito 51 (nome PRG)
+        bootPendingAt = millis();
         sendZeroBlock();
         break;}
 
@@ -3208,6 +3225,15 @@ void loop() {
       // SOLO quando il loop e' fermo, cosi' D7 resta basso durante l'elaborazione
       // del comando e il parametro arriva solo quando il firmware e' pronto.
       outByte(0xFF);
+    }
+
+    // Il 112 vero e' seguito quasi subito dal 51 (nome del PRG) e dal 53
+    // (caricamento). Se non arriva niente, il 112 era rumore sul bus flottante
+    // (C64 spenta): rimettiamo la EPROM mappata, altrimenti la cartuccia non
+    // potrebbe piu' partire.
+    if (bootPending && (millis() - bootPendingAt) > BOOT_CONFIRM_MS) {
+      bootPending = false;
+      exromRemap("112 spurio, nessun 51 dopo");
     }
 
     // diagnostica: ogni 2 s dice se il C64 sta leggendo $DF00 (in attesa)

@@ -1014,3 +1014,36 @@ e sbilanciate a destra. Ora usano `menuCenter()`:
 `tools/render_menu.py` ora rispecchia anche la build SAM (`menu-main-sam.png`)
 e il suo HELP (`menu-help-sam.png`), cosi' si possono confrontare i render con
 le foto reali.
+
+### 16.7 Sorgenti SAM fuori dal repo e switch ENABLE_SAM
+
+Richiesta di Matteo: non committare mai i sorgenti SAM (prodotto commerciale),
+**spiegare come aggiungerli** per compilare e poter scegliere in compilazione
+se includerli o no.
+
+- `git ls-files` verificato: i commerciali (`sam.c/.h`, `render.*`,
+  `reciter.*`, `*Tabs.h`, `debug.*`) restano solo in `.gitignore`; versionati
+  solo `sam_wrap.c/.h` (ponte, `SAM_BUF_SECONDS` 2 e `SAM_MAX_CHARS` 16) e
+  `it2sam.c/.h` (regole italiane -> fonemi).
+- **`SAM_SOURCES.md`** (nuovo): elenco degli 11 file da copiare in
+  `c64esp32Cart/`, provenienza (port C di SAM, funzioni `SetInput`/`SAMMain`/
+  `GetBuffer`), le **due patch obbligatorie** documentate con il codice
+  (`buffer == 0` in `sam.c` `Init()`, `bufferpos/50 + k < SAM_BUF_BYTES` in
+  `render.c` `Output8BitAry()`), misure di flash/RAM e cosa funziona senza voce.
+- **`tools/check_sam_sources.sh`**: controlla i file e le due patch, esce 1 con
+  l'elenco di cosa manca.
+- **`ENABLE_SAM`**: macro in testa a `c64esp32Cart.ino`, stessa autodetect in
+  `sam_wrap.c` (`__has_include("sam.h")`). Default: 1 se i sorgenti ci sono, 0
+  altrimenti; forzabile con
+  `--build-property "build.extra_flags=-DENABLE_SAM=0"`.
+  Con `ENABLE_SAM=0` viene escluso tutto il blocco voce (`triggerNMIfast`,
+  `samSendSample`, `samPlay`, `samAlloc`, `samRelease`, `SamPiece`/`samPieces`,
+  `samComputePieces`, `samSpeak`, `samReceiveLine`, `samFetchNews`,
+  `samSpeakNews`, `samSendNewsText`) e al suo posto ci sono stub che loggano
+  `SAM: questa build non include SAM` e mandano `sendZeroBlock()`, cosi' il C64
+  non resta in attesa.
+- Dimensioni misurate: **con SAM 88% flash / 21% RAM**, **senza SAM 85% / 20%**
+  (~30 KB flash e ~4 KB RAM in meno).
+- Verificato compilando una copia della cartella **senza** i file SAM: compila
+  e linka (85%).
+- Log d'avvio (flashato e verificato): `SAM: voce inclusa (ENABLE_SAM=1)`.

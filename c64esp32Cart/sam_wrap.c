@@ -1,4 +1,28 @@
+/* ---------------------------------------------------------------------------
+ * sam_wrap.c - ponte fra il firmware e SAM (Software Automatic Mouth).
+ *
+ * SAM e' software COMMERCIALE: sam.c/sam.h, render.*, reciter.*, *Tabs.h e
+ * debug.* NON sono nel repository. Vedi SAM_SOURCES.md nella root.
+ *
+ * Se i sorgenti SAM non ci sono (o se si compila con -DENABLE_SAM=0) questo
+ * file non definisce nulla e il firmware si costruisce senza voce: la parte
+ * C64 (menu, SD, news, koala, SID) funziona lo stesso.
+ * -------------------------------------------------------------------------*/
+#ifndef ENABLE_SAM
+#  if defined(__has_include)
+#    if __has_include("sam.h")
+#      define ENABLE_SAM 1
+#    else
+#      define ENABLE_SAM 0
+#    endif
+#  else
+#    define ENABLE_SAM 0
+#  endif
+#endif
+
 #include "sam_wrap.h"
+
+#if ENABLE_SAM
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -69,3 +93,5 @@ size_t sam_say_lang(const char *text, uint8_t *out, size_t outmax, int lang)
     memcpy(input, ph, n + 1);
     return sam_render(out, outmax);
 }
+
+#endif  /* ENABLE_SAM */

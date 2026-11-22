@@ -44,15 +44,16 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 6. [Jumper configuration](#jumper-configuration)
 7. [Boot: the EPROM bootstrap](#boot-the-eprom-bootstrap)
 8. [ESP32 firmware](#esp32-firmware)
-9. [secrets.h: WiFi, OpenWeather, NewsAPI](#secretsh-wifi-openweather-newsapi)
-10. [Preparing the SD card](#preparing-the-sd-card)
-11. [Koala files](#koala-files)
-12. [SID files](#sid-files)
-13. [PETSCII art (SEQ / D64)](#petscii-art-seq--d64)
-14. [Programming the 27C512](#programming-the-27c512)
-15. [C64 build commands](#c64-build-commands)
-16. [C64 memory layout](#c64-memory-layout)
-17. [Troubleshooting](#troubleshooting)
+9. [SAM voice (optional)](#sam-voice-optional-sources-not-in-this-repository)
+10. [secrets.h: WiFi, OpenWeather, NewsAPI](#secretsh-wifi-openweather-newsapi)
+11. [Preparing the SD card](#preparing-the-sd-card)
+12. [Koala files](#koala-files)
+13. [SID files](#sid-files)
+14. [PETSCII art (SEQ / D64)](#petscii-art-seq--d64)
+15. [Programming the 27C512](#programming-the-27c512)
+16. [C64 build commands](#c64-build-commands)
+17. [C64 memory layout](#c64-memory-layout)
+18. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -340,6 +341,24 @@ Two separate test sketches exist and are not used in production:
 arduino-cli compile --fqbn esp32:esp32:mhetesp32minikit comms_test   # bus/NMI test
 arduino-cli compile --fqbn esp32:esp32:mhetesp32minikit audio_test   # 4-bit audio test
 ```
+
+---
+
+## SAM voice (optional, sources NOT in this repository)
+
+The ESP32 can make the C64 talk with **SAM** (Software Automatic Mouth),
+streaming 4-bit samples to `$D418` over NMI (commands 113-119). SAM is
+**commercial software** (SoftVoice / Don't Ask Software), so its C sources are
+**not** part of this public repository and are listed in `.gitignore`.
+
+- how to add them (file list, where they come from, the two required patches)
+  and how to build **without** SAM: see [`SAM_SOURCES.md`](SAM_SOURCES.md);
+- `tools/check_sam_sources.sh` checks presence of the files and the patches;
+- the compile-time switch is `ENABLE_SAM` (auto-detected, or forced with
+  `--build-property "build.extra_flags=-DENABLE_SAM=0"`). Without SAM the
+  firmware still builds (85% flash instead of 88%) and everything works except
+  the voice; SAM commands answer with an empty block and log
+  `SAM: questa build non include SAM`.
 
 ---
 

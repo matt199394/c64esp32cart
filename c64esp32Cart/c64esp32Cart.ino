@@ -38,10 +38,30 @@
 #include <SPI.h>
 #include <SD.h>
 
-// SAM (italiano): sorgenti scaricati con ../espSAM/fetch_sam.sh, non in git
+// ---------------------------------------------------------------------------
+// SAM (Software Automatic Mouth) - VOCE
+// SAM e' software COMMERCIALE (SoftVoice/Don't Ask Software): i suoi sorgenti
+// NON sono nel repository, che resta pubblico. Per compilare la voce vanno
+// copiati a mano in questa cartella (vedi SAM_SOURCES.md nella root).
+//
+// ENABLE_SAM: 1 = voce inclusa, 0 = build senza SAM.
+//   - se non e' definito si abilita da solo quando i sorgenti ci sono;
+//   - si puo' forzare da riga di comando con
+//     --build-property "build.extra_flags=-DENABLE_SAM=0"
+// ---------------------------------------------------------------------------
+#ifndef ENABLE_SAM
+  #if __has_include("sam_wrap.h") && __has_include("sam.h")
+    #define ENABLE_SAM 1
+  #else
+    #define ENABLE_SAM 0
+  #endif
+#endif
+
+#if ENABLE_SAM
 extern "C" {
 #include "sam_wrap.h"
 }
+#endif
 //#include "BluetoothSerial.h"
 #include "supermon.h"
 #include "chars.h"
@@ -1999,6 +2019,11 @@ void setup() {
   // Nessun timeout: se l'ESP32 e' alimentato via USB e la C64 viene accesa
   // dopo, la EPROM deve essere ancora mappata per far partire la cartuccia.
   Serial.println("EXROM basso: EPROM mappata, attendo il comando 112");
+#if ENABLE_SAM
+  Serial.println("SAM: voce inclusa (ENABLE_SAM=1)");
+#else
+  Serial.println("SAM: build SENZA voce (ENABLE_SAM=0, vedi SAM_SOURCES.md)");
+#endif
   Serial.println("");
   Serial.println("done!");
 
@@ -2393,6 +2418,7 @@ static void sendPrgFile(const String &path) {
                 path.c_str(), loadAddr, prgEntry, (unsigned long)dataLen);
 }
 
+#if ENABLE_SAM
 // ******************************************************************************
 // SAM: trigger NMI breve (il triggerNMI() normale aspetta 150 us: troppo per
 // un campione ogni 91 us)
@@ -2670,6 +2696,22 @@ static void samSendNewsText() {
   }
   if (sendFailed) Serial.println("SAM: testo news non consegnato al C64");
 }
+
+#else   // ENABLE_SAM == 0
+// Build senza SAM (nessun sorgente commerciale): i comandi legati alla voce
+// rispondono con un blocco vuoto e scrivono il motivo nel log, cosi' il C64
+// non resta mai in attesa.
+static void samRelease() {}
+
+static void samNoSam() {
+  Serial.println("SAM: questa build non include SAM (vedi SAM_SOURCES.md)");
+  sendZeroBlock();
+}
+
+static void samReceiveLine() { samNoSam(); }
+static void samSpeakNews()   { samNoSam(); }
+static void samSendNewsText() { samNoSam(); }
+#endif  // ENABLE_SAM
 
 // Legge un byte dal C64 con il flow control (D7 alto = pronto). -1 = timeout.
 static int samReadByte() {

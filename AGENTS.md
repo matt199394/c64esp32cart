@@ -185,6 +185,24 @@ arduino-cli upload  -p /dev/ttyACM0 --fqbn esp32:esp32:mhetesp32minikit audio_te
 cd audio_test && acme c64_audio_test.asm
 ```
 
+## SAM (voce) — sorgenti commerciali
+
+- SAM (**Software Automatic Mouth**, SoftVoice / Don't Ask Software) e'
+  software **commerciale**: `sam.c/.h`, `render.*`, `reciter.*`, `*Tabs.h`,
+  `debug.*` **non sono nel repository** (sono in `.gitignore`) e non vanno mai
+  committati.
+- Per compilare la voce si copiano a mano in `c64esp32Cart/` seguendo
+  **`SAM_SOURCES.md`** (elenco file, provenienza e due patch obbligatorie);
+  `tools/check_sam_sources.sh` controlla presenza e patch.
+- `ENABLE_SAM` (macro in testa a `c64esp32Cart.ino`, stessa logica in
+  `sam_wrap.c`) decide se la voce entra nel firmware: autodetect (1 se i
+  sorgenti ci sono, 0 altrimenti) oppure forzata con
+  `--build-property "build.extra_flags=-DENABLE_SAM=0"`.
+  Senza SAM compila tutto il resto: i comandi 115-118 rispondono con un blocco
+  vuoto e `SAM: questa build non include SAM` nel log.
+- Versionati restano i file nostri: `sam_wrap.c/.h` (ponte + `SAM_BUF_SECONDS`
+  2, `SAM_MAX_CHARS` 16) e `it2sam.c/.h` (regole italiane -> fonemi).
+
 ## Sicurezza / Git
 
 - Non committare mai `c64esp32Cart/secrets.h`
@@ -638,10 +656,10 @@ Sotto, la lista storica:
    d. SAM NEWS chiede prima la fonte (schermata 65 come il menu normale,
       `menu_mode=3`) e la manda con il comando 117; il firmware tiene il
       testo in `samNewsText`, quindi 118 e 116 non rifanno il download.
-   e. `espSAM/fetch_sam.sh` applica anche il check `malloc` in `sam.c`
-      (idempotente) e accetta `SAM_BUF_SECONDS`/`SAM_MAX_CHARS` da ambiente:
-      `SAM_BUF_SECONDS=2 SAM_MAX_CHARS=16 ./fetch_sam.sh` rigenera copie
-      **identiche** a quelle di `c64esp32Cart/` (verificato con `diff`).
+   e. i sorgenti SAM (commerciali) si copiano a mano: procedura, elenco dei
+      file e le due patch obbligatorie (`malloc` in `sam.c`, bound check in
+      `render.c`) sono in **`SAM_SOURCES.md`**; `tools/check_sam_sources.sh`
+      verifica che ci sia tutto. Non esistono piu' script di fetch nel repo.
    **Fix del 2026-11-21 (dopo le prove su hardware), problemi visti:**
    - **comandi persi durante la frase**: se il C64 mandava un comando mentre
      l'ESP32 stava ancora parlando (es. 118 dopo SAM TALK), `samPlay` lo
@@ -703,6 +721,8 @@ Sotto, la lista storica:
 - `SESSION_NOTES.md`: diario completo della sessione
 - `c64esp32cart.asm`: sorgente C64
 - `c64esp32Cart/c64esp32Cart.ino`: firmware principale
+- `SAM_SOURCES.md`: come aggiungere i sorgenti SAM (commerciali) e compilare
+  con/senza voce (`ENABLE_SAM`); `tools/check_sam_sources.sh` li verifica
 - `comms_test/`: test comunicazione
 - `audio_test/`: test audio 4 bit
 - `tools/`: script di supporto

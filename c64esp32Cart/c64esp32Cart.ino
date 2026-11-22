@@ -95,6 +95,21 @@ String months[12]={"january", "february", "march", "april", "may", "june", "july
 volatile bool dataFromC64 = false;
 
 // ---------------------------------------------------------------------------
+// EXROM / EPROM di bootstrap
+// All'avvio EXROM resta BASSO (CLED HIGH -> transistor ON) perche' la C64 deve
+// poter leggere la EPROM a $8000 (CBM80 + coldstart) e copiare il loader a
+// $C000. Si alza solo quando il loader manda il comando 112, cioe' quando la
+// EPROM non serve piu' e $8000-$9FFF deve tornare RAM.
+// Prima c'era un delay(1500) fisso nel setup: se la C64 partiva in ritardo
+// (o l'ESP32 finiva l'inizializzazione prima) la ROM spariva mentre il
+// coldstart la stava ancora eseguendo.
+// ---------------------------------------------------------------------------
+static bool exromMapped = true;             // true = EPROM mappata a $8000
+static uint32_t exromMappedAt = 0;          // millis() dell'ultimo "tieni mappata"
+#define EXROM_FALLBACK_MS 60000UL           // rete di sicurezza se nessuno
+                                            // manda 112 (C64 senza cartuccia)
+
+// ---------------------------------------------------------------------------
 // SAM: modalita' "parla" (build espsamauto.prg scelta nel menu del bootstrap)
 // ---------------------------------------------------------------------------
 #define CMD_SAM_BUILD 113     // bootstrap: build SAM
@@ -269,6 +284,15 @@ void IRAM_ATTR isr_reset() {
 // (sendFailed): prima si restava in attesa per sempre e l'ESP32 si bloccava.
 // ******************************************************************************
 static bool sendFailed = false;
+
+// Alza EXROM (CLED LOW): la EPROM a $8000-$9FFF sparisce, resta RAM.
+// reason: testo per il log seriale. Sta qui, dopo i #define dei pin (CLED).
+static void exromRelease(const char *reason) {
+  if (!exromMapped) return;
+  digitalWrite(CLED, LOW);
+  exromMapped = false;
+  Serial.printf("EXROM alto (%s): $8000-$9FFF torna RAM\n", reason);
+}
 
 void sendByte(byte b) {
   if (sendFailed) return;
@@ -1862,8 +1886,9 @@ void setup() {
 
   // define outputs
   pinMode(CLED, OUTPUT);
-  digitalWrite(CLED, HIGH);
-  //digitalWrite(CLED, LOW);
+  digitalWrite(CLED, HIGH);        // EXROM basso: EPROM mappata a $8000
+  exromMapped = true;
+  exromMappedAt = millis();
   pinMode(oC64D0, OUTPUT);
   pinMode(oC64D1, OUTPUT);
   pinMode(oC64D2, OUTPUT);
@@ -1933,10 +1958,12 @@ void setup() {
   SD.remove("/directory.txt");          // pulizia del vecchio file temporaneo
   currentDir = parentDir = "/";
   buildDirectoryList();
-  // Aspetta che il C64 abbia copiato il bootstrap dalla EPROM prima di
-  // alzare EXROM. Il loader puo' anche inviare prima il comando 112.
-  delay(1500);
-  digitalWrite(CLED, LOW);
+  // NON alzare EXROM qui: la EPROM deve restare mappata finche' il loader
+  // del bootstrap non ha copiato se' stesso a $C000 e non manda il comando
+  // 112 (case 112 -> exromRelease). Il vecchio delay(1500)+CLED LOW era una
+  // scommessa sul fatto che la C64 avesse gia' finito il coldstart.
+  exromMappedAt = millis();
+  Serial.println("EXROM basso: EPROM mappata, attendo il comando 112");
   Serial.println("");
   Serial.println("done!");
 
@@ -3170,7 +3197,7 @@ void loop() {
     //========================================================
       case 112:{        // 112 = bootstrap: EXROM alto (EPROM $8000 off)
         samVariant = false;   // nuovo avvio: niente variante SAM "ereditata"
-        digitalWrite(CLED, LOW);
+        exromRelease("comando 112");
         sendZeroBlock();
         break;}
 
@@ -3184,6 +3211,13 @@ void loop() {
       // SOLO quando il loop e' fermo, cosi' D7 resta basso durante l'elaborazione
       // del comando e il parametro arriva solo quando il firmware e' pronto.
       outByte(0xFF);
+    }
+
+    // rete di sicurezza: se nessuno manda 112 (C64 avviata senza cartuccia,
+    // J3 chiuso, loader che non parte) non lasciamo una ROM mappata a
+    // $8000-$9FFF per sempre.
+    if (exromMapped && (millis() - exromMappedAt) > EXROM_FALLBACK_MS) {
+      exromRelease("timeout, nessun comando 112");
     }
 
     // diagnostica: ogni 2 s dice se il C64 sta leggendo $DF00 (in attesa)

@@ -851,3 +851,75 @@ Scritta e verificata (read-back identico, banchi 0-7 tutti uguali al binario).
 4. Test funzionali rimasti (uscita SID con SPACE, paginazione directory,
    sfondi NEWS, Supermon, nomi lunghi).
 5. Manca uno screenshot reale della pagina **HELP**.
+
+---
+
+## 16. 2026-11-21 (sera) — BOOTSD su EEPROM e EXROM solo col comando 112
+
+### 16.1 Immagine 64K del bootstrap con menu
+
+Il bootstrap con il menu `1) menu senza sam` / `2) menu con sam` (loader in
+`boot_loader.inc`) e' gia' quello che finisce nella EPROM: `bootstrap.asm`
+include lo stesso `.inc` di `bootstrap_sd.asm`, quindi non serve "scrivere
+`boot_sd.prg`" nella EPROM (un PRG a `$0801` non puo' autostartare da
+`$8000`: serve la firma `CBM80`, che sta solo in `bootstrap.asm`).
+
+Build riverificata in questa sessione:
+
+```bash
+acme bootstrap.asm                                  # c64esp8kBOOT.bin
+tools/make_eprom_image.sh all c64esp8kBOOT.bin /tmp/W27_new.bin
+cmp /tmp/W27_new.bin W27C512_c64esp8kBOOT.bin       # identici
+```
+
+| File | Byte | sha256 |
+|---|---:|---|
+| `c64esp8kBOOT.bin` | 8192 | `9f4b78c6493092b0a70f74306c7dccf54ec33789fa10fd00f1e82a005f424110` |
+| `W27C512_c64esp8kBOOT.bin` | 65536 | `15460daa1b6280700cea6f7fd08c1a61c5664e4adcc87e5ec3d3a5e3c95e2d09` |
+
+Verificato anche che i banchi 0-7 sono identici agli 8K e che le stringhe del
+menu sono presenti nel binario. **Resta solo da programmare la 27C512**:
+
+```bash
+minipro -p 'W27C512@DIP28' -z
+minipro -p 'W27C512@DIP28' -w W27C512_c64esp8kBOOT.bin
+minipro -p 'W27C512@DIP28' -r /tmp/W27C512_verify.bin
+cmp /tmp/W27C512_verify.bin W27C512_c64esp8kBOOT.bin
+```
+
+### 16.2 Firmware: EXROM resta basso finche' non arriva il comando 112
+
+Problema: il setup faceva `delay(1500)` + `CLED LOW` dopo
+`buildDirectoryList()`. Se la C64 partiva in ritardo (o l'ESP32 finiva l'init
+prima), la EPROM spariva mentre il `coldstart` la stava ancora eseguendo ->
+C64 al BASIC senza cartuccia.
+
+Modifiche in `c64esp32Cart/c64esp32Cart.ino`:
+
+- `exromMapped` / `exromMappedAt` e funzione `exromRelease(reason)` che alza
+  EXROM (`CLED LOW`) una volta sola e logga
+  `EXROM alto (<motivo>): $8000-$9FFF torna RAM`;
+- setup: `CLED HIGH` (EPROM mappata) resta, `delay(1500)+CLED LOW` **rimossi**;
+  al loro posto log `EXROM basso: EPROM mappata, attendo il comando 112`;
+- `case 112` usa `exromRelease("comando 112")`;
+- rete di sicurezza nel `loop`: se il 112 non arriva entro
+  `EXROM_FALLBACK_MS` = 60 s, `exromRelease("timeout, nessun comando 112")`.
+  Alzare EXROM piu' tardi e' innocuo: il loader e il menu girano gia' a
+  `$C000` e non leggono piu' `$8000`.
+
+Compila: 87% flash / 21% RAM (`--build-property build.partitions=no_ota`).
+
+### 16.3 Da verificare su hardware (quando la scheda e' collegata)
+
+1. Log atteso, nell'ordine: `EXROM basso: EPROM mappata, attendo il comando
+   112` -> `done!` -> (comparsa del menu di avvio) -> `CMD 112` ->
+   `EXROM alto (comando 112): $8000-$9FFF torna RAM` -> `CMD 51` ->
+   `PRG: ... load $0801, entry ...` -> `CMD 60`.
+2. Con la EPROM vecchia (senza menu) il firmware nuovo deve funzionare lo
+   stesso (manda 112 subito).
+3. Senza cartuccia inserita: nessun `CMD 112`, dopo 60 s deve comparire
+   `EXROM alto (timeout, nessun comando 112)`.
+
+Nota: `bootsd` nella root e' un build vecchio (749 byte, senza menu) e non e'
+tracciato: si puo' cancellare, il sorgente `boot_sd.prg` si rigenera con
+`acme bootstrap_sd.asm`.

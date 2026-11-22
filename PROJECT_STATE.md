@@ -1,6 +1,7 @@
 # PROJECT_STATE — C64 ESP32 Cart
 
-Aggiornato: **2026-11-17 (sessione serale)**  
+Aggiornato: **2026-11-21** (dopo la sessione SAM; vedi `AGENTS.md` per lo
+stato dettagliato e `SESSION_NOTES.md` sez. 16 per EXROM/BOOTSD)  
 Branch di sviluppo: **`pi-work`**  
 `main`: stabile, contiene il merge delle PR #1 e #2; il repository è **pubblico**.
 
@@ -16,9 +17,12 @@ il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md) (la serata del
 - **Il progetto funziona su hardware reale**: 27C512 programmata col bootstrap
   negli 8 banchi, la C64 autostarta, il menu parte, tutte le funzioni
   principali sono state provate (screenshot reali in `docs/screenshots/`).
-- **Prossimo lavoro**: fix cosmetico della lista directory (`_` mostrato come
-  `←`, vedi [Test da fare](#test-da-fare--prossimi-passi)) — richiede
-  ricompilare e riflashare l'ESP32.
+- **Prossimo lavoro**: (a) programmare la 27C512 con l'immagine 64K del
+  bootstrap nuovo (`W27C512_c64esp8kBOOT.bin`, menu 1/2, sha256
+  `15460daa...`); (b) provare la gestione EXROM del firmware (resta mappata
+  finche' non arriva il comando 112); (c) ripristinare il pulsante di reset
+  del PCB. Arretrati: fix cosmetico `_` nella lista directory, screenshot HELP,
+  rotazione credenziali.
 - **Prima di tutto**: ruotare le credenziali ancora nella storia Git pubblica
   (password WiFi, API key OpenWeather e NewsAPI) e aggiornare `secrets.h`.
 - Repository: <https://github.com/matt199394/c64esp32cart> (pubblico, Issues
@@ -190,9 +194,11 @@ C64 richiede refactoring o spostamento di codice.
 - `90..105` NEWS + art
 - **`112` bootstrap: EXROM alto** (`CLED LOW`), usato dal loader EPROM
 
-Il setup ESP32 tiene `CLED HIGH` per far partire la EPROM, poi dopo l'init
-(aspetta 1.5 s) e `buildDirectoryList()` alza EXROM come fallback. Il loader
-EPROM invia comunque il comando 112 appena possibile.
+Il firmware tiene `CLED HIGH` (EXROM basso, EPROM mappata) dal setup e la
+alza **solo** quando il loader manda il comando 112, cioe' dopo aver copiato
+se' stesso a `$C000`. Il vecchio `delay(1500)` + `CLED LOW` e' stato tolto
+(poteva togliere la ROM mentre la C64 la stava ancora leggendo). Fallback: se
+il 112 non arriva entro 60 s il firmware alza EXROM e lo logga.
 
 ---
 

@@ -319,8 +319,10 @@ On boot the firmware:
 2. opens the serial port (115200) and, if configured, connects to WiFi
    (**non-blocking**: 15 s timeout, then it moves on);
 3. mounts the SD card, scans the current directory and prepares the Koala list;
-4. after 1.5 s it raises EXROM as a fallback (the loader raises it anyway
-   with command `112`).
+4. EXROM resta **basso** (EEPROM mapped) until the loader sends command
+   `112`; there is no timed fallback any more. If `112` never arrives within
+   60 s (C64 booted without the cartridge, `J3` installed) the firmware
+   raises EXROM anyway and logs `EXROM alto (timeout...)`.
 
 Useful serial log (115200): requested file name,
 `PRG: load $xxxx, entry $xxxx`, `SID: load $xxxx, N byte`, SD errors.

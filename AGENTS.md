@@ -58,8 +58,10 @@ Il bootstrap:
   BASIC, comando ESP32 60).
 
 Requisiti: firmware ESP32 con comando 112 e `espnewsauto.prg` nella root della SD.
-Il setup ESP32 tiene EXROM basso per 1.5 s dopo l'init come fallback, poi lo alza;
-il loader invia comunque il comando 112 appena pronto.
+Il setup ESP32 **tiene EXROM basso** (EPROM mappata) finche' non arriva il
+comando 112: non c'e' piu' il `delay(1500)` che alzava EXROM a tempo perso.
+Rete di sicurezza: se il 112 non arriva entro 60 s (C64 avviata senza
+cartuccia, J3 chiuso) il firmware alza comunque EXROM e lo scrive nel log.
 
 **Non chiamare `CLR` (`$a659`) ne' il relink BASIC (`$a533`) prima del salto
 all'entry point**: il coldstart da cartuccia inizializza solo il KERNAL, quindi
@@ -488,11 +490,13 @@ PRG: `samplayer.prg` 1360, `sam_talk.prg` 1354, `sam_news.prg` 1357.
 ## Prossimi passi
 
 **Da fare (deciso con Matteo, 2026-11-21):**
-1. Scrivere `BOOTSD` (`boot_sd.prg`) sulla EEPROM 64K mappata a `$8000`
-   (27C512: replicare in tutti i banchi con `tools/make_eprom_image.sh all`).
-2. Firmware ESP32: tenere **EXROM basso** all'avvio e, una volta letta la
-   EPROM, alzare EXROM per escludere la EEPROM (oggi e' il comando 112 /
-   `CLED` mandato dal loader).
+1. ~~Scrivere `BOOTSD` (`boot_sd.prg`) sulla EEPROM 64K~~ — l'immagine 64K
+   `W27C512_c64esp8kBOOT.bin` (bootstrap con menu 1/2, replicato negli 8
+   banchi, sha256 `15460daa...`) e' pronta e verificata; resta solo da
+   **programmare la 27C512** con `minipro` (vedi comandi sopra).
+2. ~~Firmware: tenere EXROM basso all'avvio~~ — **FATTO 2026-11-21**: tolto
+   `delay(1500)+CLED LOW` dal setup, ora EXROM si alza solo col comando 112
+   (`exromRelease()`), con fallback a 60 s. Da provare su hardware.
 3. Ripristinare il **pulsante di reset** del PCB: reset contemporaneo di
    ESP32 e C64 (l'ISR su GPIO15 era stato disattivato in via sperimentale).
 

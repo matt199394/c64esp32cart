@@ -44,7 +44,7 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 6. [Jumper configuration](#jumper-configuration)
 7. [Boot: the EPROM bootstrap](#boot-the-eprom-bootstrap)
 8. [ESP32 firmware](#esp32-firmware)
-9. [SAM voice (optional)](#sam-voice-optional-sources-not-in-this-repository)
+9. [SAM: the C64 talks (TALK / NEWS)](#sam-the-c64-talks-talk--news)
 10. [secrets.h: WiFi, OpenWeather, NewsAPI](#secretsh-wifi-openweather-newsapi)
 11. [Preparing the SD card](#preparing-the-sd-card)
 12. [Koala files](#koala-files)
@@ -86,6 +86,12 @@ Inspired by Bart Venneker's and Theo van den Beld's *chat64 cart*
 - **BASIC ROM disabled** inside the menu, so `$A000-$BFFF` becomes usable RAM.
 - **Menu template** stored at `$9800-$9FCF` and reloaded when a SID or a PRG
   overwrites it.
+- **SAM TALK** (SAM build): type a line, press RETURN and the ESP32 speaks it
+  through the C64; RUN/STOP goes back to the menu.
+- **SAM NEWS** (SAM build): pick one of the news sources, the ESP32 downloads
+  the headlines, **prints the same text on the C64 screen** and reads it out
+  loud; the sentence being spoken is highlighted in yellow (karaoke), any key
+  stops the speech and returns to the menu.
 - **4-bit audio** on `$D418` (SID volume register): only 16 levels, faint.
 - **Optional, non-blocking WiFi**: without a network the menu still works,
   weather/NEWS are simply disabled.
@@ -160,6 +166,28 @@ MAIN MENU
 | SPACE | leave NEWS, slideshows, weather |
 | Q | quit the directory |
 | Y / N | answer to `PLAY LOADED SID? Y/N` before slideshows and NEWS |
+
+Choosing `2) MENU WITH SAM` in the EPROM boot menu loads a smaller menu
+(`espsamauto.prg`) that gives up SUPERMON / CLOCK / KOALA / NEWS / SLIDESHOWS
+to make room for the voice:
+
+```
+C64 ESP32 CARTRIDGE
+BY M.ANGELINI
+MAIN MENU
+  SD CARD              -> SD directory (PRG, SID, Koala)
+  HELP                 -> help page (SAM version)
+  BASIC                -> back to BASIC
+  SAM TALK             -> type a line, RETURN reads it
+  SAM NEWS             -> pick a source, text on screen read by SAM
+```
+
+| Key | Action |
+|---|---|
+| UP / DOWN | move the selection |
+| RETURN | confirm / send the typed line to SAM |
+| RUN/STOP | stop the speech, back to the menu |
+| any key | stop SAM NEWS and go back to the menu |
 
 ---
 
@@ -344,15 +372,82 @@ arduino-cli compile --fqbn esp32:esp32:mhetesp32minikit audio_test   # 4-bit aud
 
 ---
 
-## SAM voice (optional, sources NOT in this repository)
+## SAM: the C64 talks (TALK / NEWS)
 
-The ESP32 can make the C64 talk with **SAM** (Software Automatic Mouth),
-streaming 4-bit samples to `$D418` over NMI (commands 113-119). SAM is
-**commercial software** (SoftVoice / Don't Ask Software), so its C sources are
-**not** part of this public repository and are listed in `.gitignore`.
+**SAM** (Software Automatic Mouth) runs on the **ESP32**, not on the C64: the
+ESP32 turns text into 4-bit samples at 11025 Hz and streams them to the C64,
+which plays them on the SID volume register `$D418` from an NMI handler
+(one NMI per sample, handshake on `$DF00`). This is why the voice costs no
+CPU on the C64: it sounds while the C64 only prints.
+
+Enable it by choosing `2) MENU WITH SAM` in the EPROM boot menu: the loader
+sends command **113** and loads `espsamauto.prg`; the menu then loads
+`samplayer.prg` from the **SD root** when a voice entry is chosen (command
+119), so both files must be on the card.
+
+ESP32 commands used by the voice: **113** SAM build, **114** stop the speech,
+**115** a line to pronounce, **116** pronounce the downloaded news, **117**
+news source index, **118** news text to the C64, **119** load
+`/samplayer.prg`.
+
+### SAM TALK
+
+Type a line on the C64 (up to 63 characters, echoed on screen), press
+RETURN: the line goes to the ESP32 (command 115), which splits it into pieces
+of at most 16 characters (~1.6 s), synthesises them and plays them one after
+the other. **RUN/STOP** stops the voice and returns to the menu.
+
+Default language is Italian (rules in `it2sam.c`, which maps Italian sounds
+onto SAM's English phoneme tables). To force a language, start the line with
+`/en ` or `/it ` — the backslash does not exist on the C64 keyboard:
+
+```
+/en hello world, this is sam
+/it ciao, questa e' la voce italiana
+```
+
+### SAM NEWS
+
+1. Choose **SAM NEWS**: the source screen is the same as the normal NEWS
+   (command 65), RETURN confirms;
+2. the index is sent with command **117** and the ESP32 downloads the
+   headlines **once** (kept in RAM until the source changes);
+3. command **118** sends the text to the C64 at `$A000` plus a table of
+   "pieces" at `$A500` (offset in the shown text + sample count);
+4. the player **prints the text on screen** (`SAM NEWS` in reverse video on
+   row 1, `press a key to stop` on row 2, text from row 3, up to ~800
+   characters, cut at the last space so no word is split) and then speaks it;
+5. while the voice goes on, the C64 counts the samples in the NMI handler and
+   **highlights in yellow the piece being spoken** (karaoke), restoring the
+   previous one to light blue;
+6. any key stops the speech and returns to the menu (the ESP32 gets command
+   114 before the NMI vector is changed back).
+
+The text on screen is exactly what SAM reads, after this preprocessing in the
+firmware:
+
+- source name in **UPPERCASE** + `: ` before the headlines;
+- first letter of each sentence capitalised;
+- **numbers turned into words** (`9` -> "nove", `2028` -> "duemila
+  ventotto"), because SAM's phonemes ignore digits;
+- accented vowels written as letter + apostrophe (`a'`, `e'`, ...);
+- Italian sources (ANSA, Rai News, Repubblica, Il Sole 24 Ore, Google News,
+  NewsAPI) -> Italian phonemes; foreign ones (BBC, Al Jazeera, SCMP, CGTN) ->
+  English Reciter;
+- cursor off while the text is printed, so nothing blinks in the middle.
+
+Notes: the SID volume register is **4 bit** (16 levels), so the voice is
+audible but faint; SAM needs a contiguous `malloc` of ~44 KB
+(`SAM_BUF_SECONDS 2`), which is released after every sentence so the news
+download of the normal menu keeps working.
+
+### Sources and build switch (they are NOT in this repository)
+
+SAM is **commercial software** (SoftVoice / Don't Ask Software): its C sources
+are not part of this public repository and are listed in `.gitignore`.
 
 - how to add them (file list, where they come from, the two required patches)
-  and how to build **without** SAM: see [`SAM_SOURCES.md`](SAM_SOURCES.md);
+  and how to build without them: see [`SAM_SOURCES.md`](SAM_SOURCES.md);
 - `tools/check_sam_sources.sh` checks presence of the files and the patches;
 - the compile-time switch is `ENABLE_SAM` (auto-detected, or forced with
   `--build-property "build.extra_flags=-DENABLE_SAM=0"`). Without SAM the
@@ -652,6 +747,14 @@ Used by NEWS + Koala + menu (BASIC ROM disabled with `$01=$36`):
 | `$9800-$9FCF` | menu template (screen + colours) |
 | `$A000-$BFFF` | SEQ / HELP staging (RAM with BASIC ROM disabled) |
 | `$C000-$CFFB` | menu code |
+
+The SAM player (`samplayer.prg`, loaded at `$0801` by the menu) uses:
+
+| Area | Use |
+|---|---|
+| `$A000-...` | news text sent by the ESP32 (command 118) |
+| `$A500-...` | karaoke table: for each piece, offset in the text + samples |
+| `$0478` / `$D878` | first character / colour of the text (row 3, column 0) |
 
 ---
 

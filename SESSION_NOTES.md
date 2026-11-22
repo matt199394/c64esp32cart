@@ -1047,3 +1047,24 @@ se includerli o no.
 - Verificato compilando una copia della cartella **senza** i file SAM: compila
   e linka (85%).
 - Log d'avvio (flashato e verificato): `SAM: voce inclusa (ENABLE_SAM=1)`.
+
+### 16.8 README allineato alle funzioni SAM
+
+Aggiunte al `README.md`:
+
+- **Features**: SAM TALK, SAM NEWS (testo delle news scritto a video mentre
+  SAM lo legge, evidenziazione karaoke) e la nota sul percorso
+  SAM -> 4 bit -> NMI -> `$D418`;
+- **Menu and keys**: menu della build SAM a 5 voci e tasti (RETURN invia la
+  riga, RUN/STOP ferma la voce, un tasto chiude SAM NEWS);
+- nuova sezione **"SAM: the C64 talks (TALK / NEWS)"**: come si abilita
+  (menu di avvio 2, comandi 113-119, `samplayer.prg` nella root della SD),
+  dettaglio di SAM TALK (max 63 caratteri, pezzi da 16, prefisso `/en` o
+  `/it`), catena completa di SAM NEWS (fonte -> 117 -> 118 con testo a `$A000`
+  e tabella pezzi a `$A500` -> stampa -> karaoke), preprocessing del testo
+  (fonte in maiuscolo, iniziali dopo il punto, numeri in parole, accenti,
+  taglio a ~800 caratteri all'ultimo spazio), limiti (4 bit, malloc 44 KB);
+- sezione **sorgenti e switch** (`SAM_SOURCES.md`, `check_sam_sources.sh`,
+  `ENABLE_SAM`, 88% con SAM / 85% senza);
+- **memory layout**: aggiunte le aree del player SAM (`$A000`, `$A500`,
+  `$0478`/`$D878`).

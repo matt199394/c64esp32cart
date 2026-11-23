@@ -345,6 +345,47 @@ I test della parte C64 (senza ESP32) sono in `tools/emu/` con il relativo
 README: ricezione del blocco con NMI spuri, stampa lunga con NMI audio a
 11 kHz, cosa azzera RAMTAS, verifica del driver NMI su CIA2.
 
+## Stato al 2026-11-23 (handover)
+
+Sessione SAM: **testo completo delle news con scroll + karaoke**, fix del
+blocco sui testi lunghi e conversione dei simboli. Dettagli in
+`SESSION_NOTES.md` sez. 17.
+
+**Fatto e provato su hardware:**
+
+- **SAM NEWS legge il testo completo**: il firmware manda fino a `SAM_MAX_TEXT`
+  = 4000 caratteri (prima era troncato a ~780); la tabella pezzi e' a `$B800`
+  (prima `$A500`) e il contatore pezzi e' limitato a 255. Il player C64
+  (`sam_player.inc`, PRG a `$0801`) mostra il testo in una finestra di 22 righe
+  (righe 3..24) che **scorre** verso l'alto, con evidenza gialla del pezzo in
+  corso.
+- **Fix blocco su BBC/testi lunghi**: `tbl_entry` calcolava `A*4` a 8 bit e
+  per pezzi oltre il 63 andava in overflow leggendo voci sbagliate della
+  tabella -> l'evidenza si fermava. Ora l'offset e' a 16 bit (fino a 255
+  pezzi). Nuovo test `tools/emu/tbl_test.asm`.
+- **Sincronia karaoke**: `hl_advance` non ridisegna piu' tutta la finestra a
+  ogni pezzo (era ~70-100 ms di ritardo); ridisegna solo quando serve lo
+  scroll, altrimenti spegne il pezzo precedente e accende il nuovo.
+- **Conversione simboli per SAM** (news e TALK): `% $ + - &` diventano parole
+  (percento/dollari/piu'/meno/e...); l'apostrofo **resta nel testo mostrato** e
+  l'elisione italiana la gestisce `it2sam.c` (`l'economia` si pronuncia
+  "leconomia", il testo continua a mostrare `l'economia`). Le contrazioni
+  inglesi le gestisce il Reciter.
+- Check lunghezza blocco NMI ora **address-aware** (rifiuta blocchi che
+  supererebbero `$C000`); timeout ricezione alzato a ~51 s (TLS + sintesi dei
+  pezzi); `sam_news` standalone ora fa `$01=$36` (prima scriveva su ROM BASIC).
+- Firmware: 88% flash / 21% RAM. PRG rigenerati: `samplayer.prg` 1773 byte
+  (sha256 `e441d53b…`), `sam_talk.prg` 1767, `sam_news.prg` 1770. Test
+  emulatore: `karaoke_test.asm` (aggiornato), `scroll_test.asm` e
+  `tbl_test.asm` nuovi, tutti verdi.
+
+**Resta da fare (invariato da ieri):** ruotare le credenziali nella storia Git
+pubblica; fix cosmetico `_` nella lista directory; screenshot reale HELP;
+test rimasti (uscita SID con SPACE, paginazione F1/F7, sfondi NEWS, Supermon,
+nomi lunghi); poi PR `pi-work -> main`.
+
+---
+
 ## Stato al 2026-11-22 20:00 (handover)
 
 **Provato su hardware in questa sessione** (dettagli in `SESSION_NOTES.md`

@@ -141,6 +141,12 @@ static uint32_t bootPendingAt = 0;
 #define CMD_SAM_TESTO 118     // testo delle news -> C64 ($A000), poi 116
 #define CMD_SAM_PLAYER 119    // carica samplayer.prg dalla SD dell'ESP32
 
+// Lunghezza massima del testo SAM mostrato/pronunciato. Il player C64 ora
+// scorre il testo completo (karaoke con scroll): $A000-$B7FF = 6144 byte di
+// testo, tabella pezzi a $B800. Con 4000 caratteri si resta sotto i 255 pezzi
+// (4000/16 = 250) e sotto i 65536 byte dei contatori a 16 bit.
+#define SAM_MAX_TEXT 4000
+
 static bool samVariant = false;
 static volatile bool samStop = false;
 static uint8_t *samBuf = NULL;         // campioni 11025 Hz, 4 bit
@@ -899,6 +905,42 @@ static String convertNumbers(const String &in, bool italian) {
     } else {
       out += c;
       i++;
+    }
+  }
+  return out;
+}
+
+// Simboli -> parole (per SAM, che ignora i simboli non-lettera).
+// L'apostrofo resta nel testo: l'elisione italiana la gestisce it2sam.c
+// (l'economia si pronuncia "leconomia"), le contrazioni inglesi il Reciter.
+static String convertSymbols(const String &in, bool italian) {
+  String out;
+  out.reserve(in.length() + 64);
+  for (unsigned int i = 0; i < in.length(); i++) {
+    char c = in[i];
+    switch (c) {
+      case '%':
+        out += italian ? " percento " : " percent ";
+        break;
+      case '$':
+        out += italian ? " dollari " : " dollars ";
+        break;
+      case '+':
+        out += italian ? " piu' " : " plus ";
+        break;
+      case '&':
+        out += italian ? " e " : " and ";
+        break;
+      case '-': {
+        bool before = (i == 0) || in[i - 1] == ' ';
+        bool after  = (i + 1 >= in.length()) || in[i + 1] == ' ';
+        if (before || after) out += italian ? " meno " : " minus ";
+        else out += ' ';               // trattino tra parole -> spazio
+        break;
+      }
+      default:
+        out += c;
+        break;
     }
   }
   return out;
@@ -2494,7 +2536,7 @@ struct SamPiece {
   uint16_t dispOff;    // offset del pezzo nel testo da pronunciare
   uint16_t samples;    // campioni a 11025 Hz
 };
-static SamPiece samPieces[80];
+static SamPiece samPieces[256];
 static int samPieceCount = 0;
 
 static int samComputePieces(const char *text, int lang) {
@@ -2596,9 +2638,10 @@ static void samReceiveLine() {
              (line[2] == 't' || line[2] == 'T') && line[3] == ' ') {
     line += 4;
   }
-  Serial.printf("SAM: riga '%s' (%s)\n", line, lang == SAM_LANG_EN ? "en" : "it");
+  String lineStr = convertSymbols(String(line), lang == SAM_LANG_IT);
+  Serial.printf("SAM: riga '%s' (%s)\n", lineStr.c_str(), lang == SAM_LANG_EN ? "en" : "it");
   samStop = false;
-  samSpeak(line, lang);
+  samSpeak(lineStr.c_str(), lang);
 }
 
 // Scarica le news della fonte corrente e le tiene in samNewsText (usato da
@@ -2622,10 +2665,12 @@ static void samFetchNews() {
   if (t.length() == 0) t = "no news available";
   // numeri -> parole (i fonemi SAM ignorano le cifre)
   t = convertNumbers(t, src.italian);
-  // ~780 caratteri stanno sullo schermo del player (karaoke senza scroll);
-  // il resto della notizia si perde. Taglia all'ultimo spazio: niente parole a meta'.
-  if (t.length() > 780) {
-    t.remove(780);
+  // simboli -> parole (% $ + - &) e apostrofo di elisione rimosso
+  t = convertSymbols(t, src.italian);
+  // Il player ora scorre (karaoke con scroll): si manda il testo completo.
+  // Tetto prudente = SAM_MAX_TEXT; taglia all'ultimo spazio (niente parole a meta').
+  if (t.length() > SAM_MAX_TEXT) {
+    t.remove(SAM_MAX_TEXT);
     int sp = t.lastIndexOf(' ');
     if (sp > 0) t.remove(sp);
   }
@@ -2647,7 +2692,7 @@ static void samSpeakNews() {
 
 // Manda al C64 il testo delle news a $A000 (blocco: 2 byte lunghezza, 2 di
 // indirizzo, poi il testo in screen code) e, subito dopo, una tabella dei
-// pezzi a $A500 (per il karaoke: offset nel testo mostrato + campioni).
+// pezzi a $B800 (per il karaoke: offset nel testo mostrato + campioni).
 static void samSendNewsText() {
   if (samNewsText.length() == 0) samFetchNews();
   const NewsSource &src = NEWS_SOURCES[newsSourceIndex];
@@ -2657,8 +2702,8 @@ static void samSendNewsText() {
   name.toUpperCase();
   String display = name + ": " + capitalizeSentences(samNewsText);
   unsigned int len = display.length();
-  if (len > 800) {                       // niente parole a meta'
-    len = 800;
+  if (len > SAM_MAX_TEXT + 48) {         // niente parole a meta' (48 = margine nome)
+    len = SAM_MAX_TEXT + 48;
     int sp = display.lastIndexOf(' ', len);
     if (sp > 0) len = sp;
   }
@@ -2666,6 +2711,7 @@ static void samSendNewsText() {
   // pezzi del testo PRONUNCIATO + campioni (il prefisso non si pronuncia)
   unsigned int prefix = strlen(src.name) + 2;    // "nome: "
   int np = samComputePieces(samNewsText.c_str(), lang);
+  if (np > 255) np = 255;    // num_pieces sul C64 e' un byte
 
   Serial.printf("SAM: testo news al C64, %u byte, %d pezzi (%s)\n",
                 len, np, src.name);
@@ -2681,12 +2727,12 @@ static void samSendNewsText() {
   // pausa: il C64 deve ri-armare rxstate per il secondo blocco
   delay(20);
 
-  // 2) tabella pezzi a $A500: per ogni pezzo (offset mostrato, campioni)
+  // 2) tabella pezzi a $B800: per ogni pezzo (offset mostrato, campioni)
   unsigned int tableLen = np * 4;
   sendByte((byte)tableLen);
   sendByte((byte)(tableLen >> 8));
   sendByte(0x00);
-  sendByte(0xa5);
+  sendByte(0xb8);
   for (int k = 0; k < np; k++) {
     uint16_t off = (uint16_t)(prefix + samPieces[k].dispOff);
     sendByte((byte)off);

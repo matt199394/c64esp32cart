@@ -11,6 +11,9 @@ MENU_INIT = $1600
         !word 0
         jmp run
 
+; NB: le letture della color RAM vanno mascherate con AND #$0f: il nibble
+; alto non e' definito (sia su VICE sia sull'hardware vero).
+
 run
         sei
         lda #$36
@@ -18,10 +21,6 @@ run
         jsr $e544
         lda #14
         sta 646
-        ldx #4
-        ldy #0
-        sec
-        jsr $fff0
         ; testo "AAAABBBBCCCC" a $A000 (screen code 1)
         ldx #0
         lda #1
@@ -30,30 +29,30 @@ run
         cpx #12
         bne .tl
         ; tabella pezzi (offset dispOff, campioni): (0,100) (4,200) (8,300)
+        ; a $B800 (nuovo indirizzo della tabella)
         lda #0
-        sta $a500
-        lda #0
-        sta $a501
+        sta $b800
+        sta $b801
         lda #100
-        sta $a502
+        sta $b802
         lda #0
-        sta $a503
+        sta $b803
         lda #4
-        sta $a504
+        sta $b804
         lda #0
-        sta $a505
+        sta $b805
         lda #200
-        sta $a506
+        sta $b806
         lda #0
-        sta $a507
+        sta $b807
         lda #8
-        sta $a508
+        sta $b808
         lda #0
-        sta $a509
+        sta $b809
         lda #<300
-        sta $a50a
+        sta $b80a
         lda #>300
-        sta $a50b
+        sta $b80b
         ; variabili
         lda #12
         sta text_len
@@ -61,20 +60,26 @@ run
         sta text_len+1
         lda #3
         sta num_pieces
-        ; stampa + evidenzia pezzo 0
-        jsr print_text
         lda #0
         sta cur_piece
-        jsr hl_set
+        sta scroll_line
+        sta scroll_off
+        sta scroll_off+1
+        ; disegna la finestra ed evidenzia il pezzo 0
+        jsr hl_setup
+        jsr render_window
         jsr load_cur
-        ; verifica pezzo 0: d8a0..d8a3 giallo, d8a4 azzurro
-        lda $d8a0
+        ; verifica pezzo 0: d878..d87b giallo, d87c azzurro
+        lda $d878
+        and #$0f
         cmp #7
         bne fail1
-        lda $d8a3
+        lda $d87b
+        and #$0f
         cmp #7
         bne fail2
-        lda $d8a4
+        lda $d87c
+        and #$0f
         cmp #14
         bne fail3
         ; avanza al pezzo 1
@@ -83,17 +88,21 @@ run
         lda #0
         sta samp_cnt+1
         jsr hl_advance
-        ; verifica pezzo 1: d8a0 azzurro, d8a4..d8a7 giallo, d8a8 azzurro
-        lda $d8a0
+        ; verifica pezzo 1: d878 azzurro, d87c..d87f giallo, d880 azzurro
+        lda $d878
+        and #$0f
         cmp #14
         bne fail4
-        lda $d8a4
+        lda $d87c
+        and #$0f
         cmp #7
         bne fail5
-        lda $d8a7
+        lda $d87f
+        and #$0f
         cmp #7
         bne fail6
-        lda $d8a8
+        lda $d880
+        and #$0f
         cmp #14
         bne fail7
         ; OK

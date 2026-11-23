@@ -31,10 +31,12 @@
 !addr ptr2   = $f9                  ; puntatore generico (karaoke)
 
 ; indirizzi fissi dei due blocchi e dello schermo per il karaoke
-txt_src  = $a000                     ; blocco 1: testo mostrato
-tbl_src  = $a500                     ; blocco 2: tabella pezzi (4 byte ognuno)
+txt_src  = $a000                     ; blocco 1: testo mostrato (screen code)
+tbl_src  = $b800                     ; blocco 2: tabella pezzi (4 byte ognuno)
 scr_base = $0478                     ; il testo parte alla riga 3 (colonna 0)
 col_base = $d878                     ; color RAM della riga 3
+win_rows = 22                        ; righe visibili della finestra (righe 3..24)
+win_chars = win_rows * 40            ; 880 caratteri visibili
 
         jmp sam_talk
         jmp sam_news
@@ -92,8 +94,13 @@ nmi_recv
         lda rxlen
         ora rxlen+1
         beq .stop                   ; blocco vuoto
-        lda rxlen+1
-        cmp #$0c                    ; blocchi assurdi (> $0BFF): rifiuta
+        ; rifiuta i blocchi che supererebbero $C000 (codice del menu):
+        ; dest + len deve restare sotto $C000. Con dest a $A000 o $B800
+        ; (byte basso $00) basta sommare gli alti byte di dest e len.
+        lda rxdest+1
+        clc
+        adc rxlen+1
+        cmp #$c0
         bcs .stop
         lda #2
         sta rxstate
@@ -261,8 +268,9 @@ wait_ready
 .ok     rts
 
 !zone recvwait
-; attende la fine della ricezione (rxstate = 0), timeout ~34 s
-; (il download delle news via TLS puo' richiedere parecchi secondi)
+; attende la fine della ricezione (rxstate = 0), timeout ~51 s
+; (il download delle news via TLS + la sintesi dei pezzi SAM possono
+; richiedere parecchi secondi, di piu' ora che il testo e' completo)
 recv_wait
         lda $a2
         sta rw_t0
@@ -275,7 +283,7 @@ recv_wait
         bcs .nowrap
         inc rw_wrap
         lda rw_wrap
-        cmp #8
+        cmp #12
         bcs .timeout
 .nowrap lda $a2
         sta rw_t0
@@ -309,7 +317,7 @@ recv_news
         sta text_len
         lda blk_len+1
         sta text_len+1
-        lda #1                              ; secondo blocco: tabella a $A500
+        lda #1                              ; secondo blocco: tabella a $B800
         sta rxstate
         lda #0
         sta rxidx
@@ -399,11 +407,13 @@ sam_talk
 !zone news
 ; ---------------------------------------------------------------------------
 sam_news
+        lda #$36                            ; $A000-$BFFF = RAM (anche nei PRG
+        sta $01                             ; autonomi caricati dal BASIC)
         jsr sam_on
         ldx #<msg_news
         ldy #>msg_news
         jsr scr_init
-        jsr recv_news                       ; testo a $A000 + tabella a $A500
+        jsr recv_news                       ; testo a $A000 + tabella a $B800
         lda num_pieces
         bne .testo                          ; se l'ESP32 non ha mandato nulla
         ldx #<msg_notext                    ; lo si dice a video (la voce parte
@@ -412,14 +422,18 @@ sam_news
         lda #116
         sta $de00
         jmp .wait                           ; niente karaoke: aspetta solo il tasto
-.testo  jsr print_text                      ; PRIMA stampa il testo...
+.testo  lda #0
+        sta scroll_off
+        sta scroll_off+1
+        sta scroll_line
+        sta cur_piece
+        jsr hl_setup                        ; calcola hl_off/hl_off2 e allinea
+        jsr render_window                   ; disegna finestra + evidenza pezzo 0
         lda #116
-        sta $de00                           ; ...poi avvia la voce
+        sta $de00                           ; avvia la voce
         lda #0
         sta samp_cnt
         sta samp_cnt+1
-        sta cur_piece
-        jsr hl_set                          ; evidenzia il pezzo 0
         jsr load_cur
 .wait   jsr getin                           ; karaoke + attesa tasto
         bne .stop
@@ -440,52 +454,67 @@ sam_news
 .stop   jmp sam_stop
 
 ; ---------------------------------------------------------------------------
-;  Karaoke: il testo (stampato in riga 4) viene evidenziato in giallo man mano
-;  che la voce lo pronuncia. Il testo e' <=800 caratteri e non scorre.
+;  Karaoke con scroll: il testo completo (a $A000, screen code) viene mostrato
+;  in una finestra di 22 righe (righe 3..24) e scorre verso l'alto man mano che
+;  la voce avanza. Il pezzo corrente viene evidenziato in giallo.
 ; ---------------------------------------------------------------------------
 !zone karaoke
-; stampa il testo (screen code) ricevuto a $A000 con CHROUT
-print_text
-        lda #1
-        sta $cc                            ; cursore spento
-        ldx #3                              ; riga 3, colonna 0: il testo parte
-        ldy #0                              ; SEMPRE dalla prima colonna
+; divide div_in (16 bit) per 40: A = quoziente (0..255), div_rem = resto
+div40
+        lda #0
+        sta div_q
+.loop   lda div_in+1
+        bne .sub
+        lda div_in
+        cmp #40
+        bcc .rem
+.sub    lda div_in
         sec
-        jsr $fff0                           ; PLOT (set cursore)
-        lda #<txt_src
-        sta ptr1
-        lda #>txt_src
-        sta ptr1+1
-        lda text_len
-        sta text_cnt
-        lda text_len+1
-        sta text_cnt+1
-.loop   lda text_cnt
-        ora text_cnt+1
-        beq .pdone
-        ldy #0
-        lda (ptr1),y
-        jsr scr2pet
-        jsr basout
-        inc ptr1
-        bne .nohi
-        inc ptr1+1
-.nohi   lda text_cnt
-        bne .declo
-        dec text_cnt+1
-.declo  dec text_cnt
+        sbc #40
+        sta div_in
+        lda div_in+1
+        sbc #0
+        sta div_in+1
+        inc div_q
         jmp .loop
-.pdone  rts
+.rem    lda div_in
+        sta div_rem
+        lda div_q
+        rts
 
-; ptr1 = tbl_src + A*4 (ingresso di tabella del pezzo A)
+; scroll_off = scroll_line * 40
+set_scroll_off
+        lda #0
+        sta scroll_off
+        sta scroll_off+1
+        ldx scroll_line
+        beq .sdone
+        clc
+.sloop  lda scroll_off
+        adc #40
+        sta scroll_off
+        lda scroll_off+1
+        adc #0
+        sta scroll_off+1
+        dex
+        bne .sloop
+.sdone  rts
+
+; ptr1 = tbl_src + A*4 (ingresso di tabella del pezzo A, A = 0..255)
 tbl_entry
-        asl
-        asl
+        sta tmpoff                       ; A*4 a 16 bit (fino a 255 pezzi)
+        lda #0
+        sta tmpoff+1
+        asl tmpoff
+        rol tmpoff+1
+        asl tmpoff
+        rol tmpoff+1
+        lda tmpoff
         clc
         adc #<tbl_src
         sta ptr1
-        lda #>tbl_src
-        adc #0
+        lda tmpoff+1
+        adc #>tbl_src
         sta ptr1+1
         rts
 
@@ -517,9 +546,9 @@ color_fill
         bne .cf
 .cdone  rts
 
-; calcola il range del pezzo cur_piece e lo evidenzia in giallo
-hl_set
-        lda cur_piece                       ; dispOff del pezzo -> hl_off
+; calcola hl_off/hl_off2 del pezzo corrente e allinea la finestra (scroll)
+hl_setup
+        lda cur_piece
         jsr tbl_entry
         ldy #0
         lda (ptr1),y
@@ -527,7 +556,7 @@ hl_set
         iny
         lda (ptr1),y
         sta hl_off+1
-        lda cur_piece                       ; dispOff del successivo (o text_len)
+        lda cur_piece
         clc
         adc #1
         cmp num_pieces
@@ -536,7 +565,7 @@ hl_set
         sta hl_off2
         lda text_len+1
         sta hl_off2+1
-        jmp .len
+        jmp .scroll
 .nxt    jsr tbl_entry
         ldy #0
         lda (ptr1),y
@@ -544,36 +573,199 @@ hl_set
         iny
         lda (ptr1),y
         sta hl_off2+1
-.len    lda hl_off2                         ; hl_len = hl_off2 - hl_off
+.scroll
+        ; start_line = hl_off / 40
+        lda hl_off
+        sta div_in
+        lda hl_off+1
+        sta div_in+1
+        jsr div40
+        sta start_line
+        ; difensivo: pezzo sopra la finestra -> riallinea all'inizio
+        lda start_line
+        cmp scroll_line
+        bcs .chk
+        sta scroll_line
+.chk
+        ; se start_line oltre scroll_line + win_rows - 2, scorri in basso
+        lda scroll_line
+        clc
+        adc #(win_rows - 2)
+        sta tmp_line
+        lda start_line
+        cmp tmp_line
+        bcc .align
+        beq .align
+        lda start_line
+        sec
+        sbc #(win_rows - 2)
+        sta scroll_line
+.align
+        jmp set_scroll_off
+
+; ridisegna la finestra (testo + color RAM azzurro) ed evidenzia il pezzo
+render_window
+        lda #1
+        sta $cc                            ; cursore spento
+        ; sorgente = txt_src + scroll_off
+        lda #<txt_src
+        clc
+        adc scroll_off
+        sta ptr1
+        lda #>txt_src
+        adc scroll_off+1
+        sta ptr1+1
+        ; destinazione schermo = scr_base
+        lda #<scr_base
+        sta ptr2
+        lda #>scr_base
+        sta ptr2+1
+        ; destinazione color RAM = col_base
+        lda #<col_base
+        sta rxdest
+        lda #>col_base
+        sta rxdest+1
+        ; caratteri rimanenti nel testo = text_len - scroll_off
+        lda text_len
+        sec
+        sbc scroll_off
+        sta render_rem
+        lda text_len+1
+        sbc scroll_off+1
+        sta render_rem+1
+        ; contatore finestra = win_chars
+        lda #<win_chars
+        sta render_cnt
+        lda #>win_chars
+        sta render_cnt+1
+.rloop  ldy #0
+        lda render_rem
+        ora render_rem+1
+        bne .copy
+        lda #32                            ; testo finito: riempi con spazi
+        jmp .put
+.copy   lda (ptr1),y
+.put    sta (ptr2),y
+        lda #14                            ; azzurro per tutto il testo
+        sta (rxdest),y
+        ; avanzamento sorgente solo se c'e' ancora testo
+        lda render_rem
+        ora render_rem+1
+        beq .nosrc
+        inc ptr1
+        bne .s1
+        inc ptr1+1
+.s1     lda render_rem
+        bne .r1
+        dec render_rem+1
+.r1     dec render_rem
+.nosrc  inc ptr2
+        bne .d1
+        inc ptr2+1
+.d1     inc rxdest
+        bne .c1
+        inc rxdest+1
+.c1     lda render_cnt
+        bne .n1
+        dec render_cnt+1
+.n1     dec render_cnt
+        lda render_cnt
+        ora render_cnt+1
+        bne .rloop
+        lda #7                             ; giallo per il pezzo corrente
+        jmp hl_fill
+
+; evidenzia hl_off..hl_off2 nella color RAM col colore passato in A
+hl_fill
+        tax                                ; salva il colore in X
+        ; hl_len = hl_off2 - hl_off (lunghezza del pezzo)
+        lda hl_off2
         sec
         sbc hl_off
         sta hl_len
-        lda hl_off                          ; color RAM = col_base + hl_off
+        lda hl_off2+1
+        sbc hl_off+1
+        beq .lenok
+        lda #40                            ; sicurezza (mai piu' di una riga)
+        sta hl_len
+.lenok
+        ; color RAM = col_base + hl_off - scroll_off
+        lda hl_off
+        sec
+        sbc scroll_off
+        sta hl_lo
+        lda hl_off+1
+        sbc scroll_off+1
+        sta hl_hi
+        lda hl_lo
         clc
         adc #<col_base
         sta hl_lo
-        lda hl_off+1
+        lda hl_hi
         adc #>col_base
         sta hl_hi
-        lda #7                              ; giallo
+        txa                                ; ripristina il colore
         jmp color_fill
 
-; toglie l'evidenza al pezzo precedente (lo rimette azzurro, come il resto)
-hl_revert
-        lda #14                             ; azzurro (colore del testo)
-        jmp color_fill
-
-; passa al pezzo successivo: toglie il vecchio, evidenzia il nuovo
+; passa al pezzo successivo: senza scroll aggiorna solo l'evidenza (veloce),
+; con scroll ridisegna tutta la finestra.
 hl_advance
-        lda hl_len
-        beq .skip
-        jsr hl_revert
-.skip   inc cur_piece
+        inc cur_piece
         lda cur_piece
         cmp num_pieces
-        bcs .adone
-        jsr hl_set
-        jsr load_cur
+        bcc .go
+        jmp .adone
+.go     ; salva il pezzo precedente e la riga della finestra
+        lda hl_off
+        sta old_off
+        lda hl_off+1
+        sta old_off+1
+        lda hl_off2
+        sta old_off2
+        lda hl_off2+1
+        sta old_off2+1
+        lda scroll_line
+        sta old_scroll
+        ; calcola il nuovo pezzo e l'eventuale scroll
+        jsr hl_setup
+        ; salva il nuovo pezzo (hl_setup ha scritto hl_off/hl_off2)
+        lda hl_off
+        sta new_off
+        lda hl_off+1
+        sta new_off+1
+        lda hl_off2
+        sta new_off2
+        lda hl_off2+1
+        sta new_off2+1
+        lda scroll_line
+        cmp old_scroll
+        beq .noscroll
+        ; scroll: ridisegna tutta la finestra (testo + evidenza)
+        jsr render_window
+        jmp .load
+.noscroll
+        ; niente scroll: togli il vecchio (azzurro) e accendi il nuovo (giallo)
+        lda old_off
+        sta hl_off
+        lda old_off+1
+        sta hl_off+1
+        lda old_off2
+        sta hl_off2
+        lda old_off2+1
+        sta hl_off2+1
+        lda #14
+        jsr hl_fill
+        lda new_off
+        sta hl_off
+        lda new_off+1
+        sta hl_off+1
+        lda new_off2
+        sta hl_off2
+        lda new_off2+1
+        sta hl_off2+1
+        lda #7
+        jsr hl_fill
+.load   jsr load_cur
 .adone  lda #0
         sta hl_len
         sta samp_cnt
@@ -634,6 +826,21 @@ hl_hi      !byte 0                          ; color RAM da evidenziare (hi)
 hl_len     !byte 0                          ; lunghezza dell'evidenza (char)
 hl_off     !word 0                          ; offset del pezzo (tmp)
 hl_off2    !word 0                          ; offset del pezzo successivo (tmp)
+old_off    !word 0                          ; offset del pezzo precedente (tmp)
+old_off2   !word 0                          ; fine del pezzo precedente (tmp)
+new_off    !word 0                          ; offset del nuovo pezzo (tmp)
+new_off2   !word 0                          ; fine del nuovo pezzo (tmp)
+old_scroll !byte 0                          ; scroll_line precedente (tmp)
+tmpoff     !word 0                          ; temporaneo per tbl_entry
+scroll_off !word 0                          ; offset del primo char visibile
+scroll_line !byte 0                         ; riga della finestra (scroll_off/40)
+render_rem !word 0                          ; testo rimanente (tmp)
+render_cnt !word 0                          ; contatore finestra (tmp)
+div_in     !word 0                          ; dividendo per div40 (tmp)
+div_q      !byte 0                          ; quoziente (tmp)
+div_rem    !byte 0                          ; resto (tmp)
+start_line !byte 0                          ; riga del pezzo corrente (tmp)
+tmp_line   !byte 0                          ; riga limite della finestra (tmp)
 
 msg_talk
         !byte 18                            ; RVS ON

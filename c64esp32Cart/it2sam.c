@@ -263,6 +263,11 @@ size_t it_to_sam(const char *text, char *out, size_t outmax)
             ch = (char)b;
         } else if (b >= 'A' && b <= 'Z') {
             ch = (char)(b - 'A' + 'a');
+        } else if (b == '\'') {
+            // elisione (l'economia, dell'anno, un'amica) e accenti
+            // ascii (a' e' i' o' u'): concatena senza chiudere la parola,
+            // cosi' "l'economia" si pronuncia "leconomia".
+            continue;
         } else if (b == '.' || b == '?' || b == '!' || b == ',' ||
                    b == ';' || b == ':' || b == '-') {
             punct = (char)b;

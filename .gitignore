@@ -49,3 +49,10 @@ firmware_backup/
 
 # build SAM: PRG del menu ridotto
 /espsamauto.prg
+
+# artefatto locale del bootstrap sd2iec (boot_sd.prg e' quello tracciato)
+/bootsd
+
+# output dei test in emulatore (rigenerabili con acme; vedi tools/emu/README.md)
+/tools/emu/*.prg
+/tools/emu/sam_player_test.inc

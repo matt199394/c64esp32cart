@@ -41,11 +41,22 @@ Note:
 - l'esito dei test si legge nello screenshot; in caso di errore il programma
   mette il bordo rosso o stampa i valori di stato.
 
-# 6) karaoke: print_text + hl_set/hl_advance su tabella finta (esito sul bordo)
+# 6) karaoke: hl_setup + render_window + hl_advance su tabella finta (bordo)
 sed 's/\$df00/fakeio/g' ../../sam_player.inc > sam_player_test.inc
 acme karaoke_test.asm      # -> kfinal.prg (verde = OK, colore = fail)
 SDL_VIDEODRIVER=dummy timeout 60 x64sc -console -warp -sounddev dummy \
     -limitcycles 8000000 -exitscreenshot /tmp/k.png -autostart kfinal.prg
+
+# 8) scroll del testo completo: finestra 22 righe, il pezzo 53 fa scorrere
+#    (scroll_line 0 -> 1, evidenza a $DBA0). Esito sul bordo (verde = OK).
+acme scroll_test.asm       # -> scroll.prg
+SDL_VIDEODRIVER=dummy timeout 60 x64sc -console -warp -sounddev dummy \
+    -limitcycles 20000000 -exitscreenshot /tmp/scroll.png -autostart scroll.prg
+
+# 9) tbl_entry oltre il pezzo 63 (regressione overflow A*4 a 8 bit)
+acme tbl_test.asm          # -> tbltest.prg (verde = OK per cur_piece 100 e 255)
+SDL_VIDEODRIVER=dummy timeout 60 x64sc -console -warp -sounddev dummy \
+    -limitcycles 8000000 -exitscreenshot /tmp/tbl.png -autostart tbltest.prg
 
 # 7) color_fill isolato (minimo, senza player)
 acme color_fill_test.asm   # -> cftest.prg (verde = OK)

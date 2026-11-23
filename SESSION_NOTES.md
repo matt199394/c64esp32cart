@@ -1086,3 +1086,81 @@ autorizzazione del proprietario dei diritti.
   compila anche senza SAM (`ENABLE_SAM`).
 - `AGENTS.md`: la regola su SAM dice esplicitamente "commerciale e
   proprietario" e vieta l'uso commerciale senza autorizzazione.
+
+## 17. 2026-11-23 — SAM NEWS: testo completo con scroll, fix blocco e simboli
+
+Sessione dedicata a SAM NEWS. Partenza: il firmware troncava il testo a ~780
+caratteri e il player mostrava una sola schermata (~24 righe); obiettivo:
+riprodurre il testo completo.
+
+### 17.1 Testo completo (firmware)
+
+- `#define SAM_MAX_TEXT 4000` e `samPieces[80] -> samPieces[256]`.
+- In `samFetchNews()` il cap passa da 780 a 4000 (taglio all'ultimo spazio);
+  in `samSendNewsText()` il tetto del testo mostrato passa da 800 a
+  `SAM_MAX_TEXT + 48`, con `np` limitato a 255 (il contatore pezzi sul C64 e'
+  un byte).
+- La tabella pezzi si sposta da `$A500` a `$B800` per lasciare spazio al testo
+  (il testo sta in `$A000-$B7FF`).
+
+### 17.2 Player C64 con scroll (sam_player.inc)
+
+- Costanti nuove: `tbl_src=$B800`, `win_rows=22`, `win_chars=880` (righe 3..24).
+- Rimosse `print_text`/`hl_set`/`hl_revert`; aggiunte `div40`,
+  `set_scroll_off`, `hl_setup`, `render_window`, `hl_fill`; `hl_advance`
+  riscritto.
+- `render_window` disegna la finestra direttamente in screen RAM/color RAM
+  (screen code gia' pronti dall'ESP32) e poi evidenzia il pezzo corrente;
+  `hl_setup` calcola gli offset e decide se scorrere (`scroll_line`/
+  `scroll_off`, allineati a 40).
+- `sam_news` ora fa `lda #$36; sta $01` (i PRG autonomi `sam_news.prg` prima
+  scrivevano su ROM BASIC, perche' caricati con `$01=$37`).
+- Check lunghezza blocco NMI address-aware: rifiuta i blocchi con
+  `dest + len >= $C000` (prima era un `cmp #$0c` fisso che avrebbe scartato i
+  blocchi testo lunghi); timeout `recv_wait` alzato da ~34 s a ~51 s
+  (`cmp #12` invece di `cmp #8`).
+
+### 17.3 Bug "BBC si blocca dopo una riga" — tbl_entry overflow
+
+- `tbl_entry` calcolava `A*4` con due `asl` a 8 bit: oltre 63 pezzi l'offset
+  andava in overflow e `load_cur`/`hl_setup` leggevano voci sbagliate della
+  tabella -> campioni errati -> il karaoke si fermava. Con BBC (piu' di 63
+  pezzi) il blocco arrivava subito dopo il primo scroll.
+- Fix: offset a 16 bit (`sta tmpoff; lda #0; sta tmpoff+1; asl/rol x2`) che
+  supporta 255 pezzi. Nuovo test `tools/emu/tbl_test.asm` (pezzi 100 e 255).
+
+### 17.4 Ritardo dell'evidenza gialla
+
+- `hl_advance` ridisegnava tutta la finestra (880 celle schermo + 880 color
+  RAM, ~70-100 ms) a ogni pezzo, quindi l'evidenza restava indietro rispetto
+  alla voce.
+- Fix: `hl_advance` salva il pezzo precedente, chiama `hl_setup`, e se
+  `scroll_line` non cambia fa solo `hl_fill` sul vecchio (azzurro) e sul nuovo
+  (giallo); `render_window` (scroll + ridisegno completo) gira solo quando
+  serve lo scroll. `hl_fill` ora prende il colore in A (per riusarlo).
+
+### 17.5 Conversione simboli per SAM
+
+- Nuova `convertSymbols(in, italian)` nel firmware, applicata in
+  `samFetchNews()` (dopo `convertNumbers`) e in `samReceiveLine()`:
+  `% -> percento/percent`, `$ -> dollari/dollars`, `+ -> piu'/plus`,
+  `& -> e/and`, `- -> meno/minus` se isolato (spazi intorno/inizio), altrimenti
+  spazio (trattino fra parole).
+- Apostrofo: su richiesta resta **visibile** nel testo mostrato. Prima lo
+  rimuovevo da `samNewsText` (display + voce); ora resta e l'elisione italiana
+  la gestisce `it2sam.c` con un `else if (b == '\'') continue;` che concatena
+  senza chiudere la parola (`l'economia` -> si pronuncia "leconomia"). Le
+  contrazioni inglesi le gestisce il Reciter. Verificato con un test C
+  standalone di `it_to_sam`.
+
+### 17.6 Verifiche
+
+- Firmware: 88% flash / 21% RAM, flashato (boot pulito `boot:0x13`).
+- Log seriale hardware: `CMD 118 -> SAM: testo news al C64, 806 byte, 62 pezzi`
+  (ANSA), BBC letta per intero senza blocco.
+- Emulatore (VICE): `karaoke_test.asm` (aggiornato), `scroll_test.asm` e
+  `tbl_test.asm` nuovi; tutti verdi in modo deterministico (bordo verde).
+  Nota: le letture della color RAM nei test vanno mascherate con `AND #$0f`
+  (il nibble alto non e' definito).
+- PRG rigenerati: `samplayer.prg` 1773 (sha256 `e441d53b…`), `sam_talk.prg`
+  1767, `sam_news.prg` 1770; copiati nella SD.

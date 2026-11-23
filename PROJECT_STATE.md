@@ -1,7 +1,8 @@
 # PROJECT_STATE — C64 ESP32 Cart
 
-Aggiornato: **2026-11-22** (sessione EPROM/EXROM/reset/menu di avvio:
-`SESSION_NOTES.md` sez. 16.1-16.6, regole operative in `AGENTS.md`)  
+Aggiornato: **2026-11-23** (sessione SAM: testo completo con scroll, fix
+`tbl_entry` >63 pezzi, sincronia karaoke, conversione simboli; diario in
+`SESSION_NOTES.md` sez. 17, regole operative in `AGENTS.md`)  
 Branch di sviluppo: **`pi-work`**  
 `main`: stabile, contiene il merge delle PR #1 e #2; il repository è **pubblico**.
 
@@ -32,8 +33,16 @@ il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md) (la serata del
 - **Pulsante di reset della cartuccia**: funziona. Il net `iRST` va solo a
   GPIO15 (non al `/RESET` della C64): il firmware lo legge in polling con
   debounce e fa reset di ESP32 + C64 -> si riparte dal menu del bootstrap.
-- Firmware ESP32: **87% flash / 21% RAM** (`--build-property
+- Firmware ESP32: **88% flash / 21% RAM** (`--build-property
   build.partitions=no_ota`), flashato su `/dev/ttyACM0`.
+- **SAM NEWS: testo completo e scorrevole** (2026-11-23): il player a `$0801`
+  mostra il testo in una finestra di 22 righe con scroll + karaoke (evidenza
+  gialla), il firmware invia fino a 4000 caratteri (tabella pezzi a `$B800`,
+  tetto 255 pezzi). Fix `tbl_entry` (overflow a 8 bit oltre 63 pezzi) e
+  highlight aggiornato senza ridisegnare tutta la finestra (niente ritardo).
+- **Conversione simboli per SAM**: `% $ + - &` diventano parole (percento,
+  dollari, piu', meno/e, ...); l'apostrofo resta nel testo e l'elisione
+  italiana (`l'economia` -> "leconomia") la gestisce `it2sam.c`.
 - Ultima build C64 completa: codice fino a `$CFFB` (5 byte liberi in
   `$C000-$CFFF`): ogni nuova funzione richiede refactoring.
 - La SD della cartuccia è la **7.4G label `8074-0EDB`** (mount tipico
@@ -128,7 +137,7 @@ jumper, come si faceva con `c64esp8kROM.bin`.
 | `boot_sd.prg` | 2725 | `b09fe48eb70269e224ecd8ad77ff259e123bc1c6f4140f5fb1cf1930b8c20fe0` |
 | `espnewsauto.prg` | 4160 | `9324f1a2e2cd6c83b1f5dcef50176a8097a32e63f060f158610cdc252c2b0f76` |
 | `espsamauto.prg` | 4011 | `b7b5532a9ecf8c47f5f8904f0690c4d27fc3aadb571ac561265d4c7a8d1d56a3` |
-| `samplayer.prg` | 1340 | `d2fa82023ee3c19876818d7c50b9b5750e425ec1fe2381a35d97f72006d89163` |
+| `samplayer.prg` | 1773 | `e441d53b1022d55ec9122e33f93b3aab8527631c41b93da3e9656b14e3730e54` |
 
 `c64esp8kBOOT.bin` e' il bootstrap + menu di avvio (loader + template
 `boot_menu.inc`, ~2,1 KB su 8 KB); l'immagine 64K e' lo stesso contenuto
@@ -304,6 +313,17 @@ fonte selezionabile) su hardware; bootstrap con menu di avvio 1/2 a schermo
 pieno (cornice, titolo giallo) programmato e verificato; EXROM mappata fino al
 comando 112; pulsante di reset della cartuccia funzionante; HELP separato per
 la build SAM; testi del menu di avvio in inglese.
+
+**Fatto (2026-11-23):** SAM NEWS legge il testo completo (non piu' troncato a
+~780 caratteri): il firmware manda fino a 4000 caratteri e il player scorre
+con karaoke (finestra 22 righe, evidenza gialla). Corretto il blocco su testi
+lunghi (overflow `tbl_entry` a 8 bit oltre 63 pezzi) e il ritardo dell'evidenza
+(l'avanzamento non ridisegna piu' tutta la finestra se non serve lo scroll).
+Aggiunta conversione simboli `% $ + - &` in parole (it/en) e gestione
+elisione dell'apostrofo in `it2sam.c` (`l'economia` -> "leconomia"), con
+l'apostrofo che resta visibile nel testo mostrato. Nuovi test emulatore
+(`scroll_test.asm`, `tbl_test.asm`) e `karaoke_test.asm` aggiornato. Provato
+su hardware: ANSA e BBC lette per intero, karaoke sincronizzato.
 
 1. **Fix cosmetico lista directory**: nella directory i caratteri `_` dei nomi
    file vengono mostrati come `←` (es. `all←gif←koa←split` invece di

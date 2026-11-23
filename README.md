@@ -428,10 +428,13 @@ onto SAM's English phoneme tables). To force a language, start the line with
 2. the index is sent with command **117** and the ESP32 downloads the
    headlines **once** (kept in RAM until the source changes);
 3. command **118** sends the text to the C64 at `$A000` plus a table of
-   "pieces" at `$A500` (offset in the shown text + sample count);
+   "pieces" at `$B800` (offset in the shown text + sample count);
 4. the player **prints the text on screen** (`SAM NEWS` in reverse video on
-   row 1, `press a key to stop` on row 2, text from row 3, up to ~800
-   characters, cut at the last space so no word is split) and then speaks it;
+   row 1, `press a key to stop` on row 2, text from row 3 in a 22-row
+   window) and then speaks it; when the text is longer than the window it
+   **scrolls up** as the voice advances, so the whole news is shown (the
+   firmware sends up to 4000 characters, cut at the last space so no word
+   is split);
 5. while the voice goes on, the C64 counts the samples in the NMI handler and
    **highlights in yellow the piece being spoken** (karaoke), restoring the
    previous one to light blue;
@@ -445,6 +448,12 @@ firmware:
 - first letter of each sentence capitalised;
 - **numbers turned into words** (`9` -> "nove", `2028` -> "duemila
   ventotto"), because SAM's phonemes ignore digits;
+- **symbols turned into words** so SAM reads them: `%` -> "percento",
+  `$` -> "dollari", `+` -> "piu'", `&` -> "e", `-` -> "meno" when it is a
+  standalone sign (otherwise a space, so hyphenated words stay together);
+  English sources use "percent", "dollars", "plus", "and", "minus";
+- apostrophes stay on screen: the Italian elision is handled by `it2sam.c`
+  (`l'economia` is read "leconomia") and English contractions by the Reciter;
 - accented vowels written as letter + apostrophe (`a'`, `e'`, ...);
 - Italian sources (ANSA, Rai News, Repubblica, Il Sole 24 Ore, Google News,
   NewsAPI) -> Italian phonemes; foreign ones (BBC, Al Jazeera, SCMP, CGTN) ->
@@ -767,9 +776,9 @@ The SAM player (`samplayer.prg`, loaded at `$0801` by the menu) uses:
 
 | Area | Use |
 |---|---|
-| `$A000-...` | news text sent by the ESP32 (command 118) |
-| `$A500-...` | karaoke table: for each piece, offset in the text + samples |
-| `$0478` / `$D878` | first character / colour of the text (row 3, column 0) |
+| `$A000-$B7FF` | news text sent by the ESP32 (command 118, up to 4000 chars) |
+| `$B800-...` | karaoke table: for each piece, offset in the text + samples |
+| `$0478` / `$D878` | first character / colour of the 22-row text window (row 3) |
 
 ---
 

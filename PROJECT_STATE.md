@@ -1,27 +1,60 @@
 # PROJECT_STATE — C64 ESP32 Cart
 
-Aggiornato: **2026-11-17**  
+Aggiornato: **2026-11-23** (sessione SAM: testo completo con scroll, fix
+`tbl_entry` >63 pezzi, sincronia karaoke, conversione simboli; diario in
+`SESSION_NOTES.md` sez. 17, regole operative in `AGENTS.md`)  
 Branch di sviluppo: **`pi-work`**  
-`main`: stabile; il merge `pi-work → main` va fatto solo alla PR finale.
+`main`: stabile, contiene il merge delle PR #1 e #2; il repository è **pubblico**.
 
 Questo file è il riepilogo operativo per riprendere il progetto in una nuova
 sessione. Le regole e i comandi rapidi restano anche in [`AGENTS.md`](AGENTS.md);
-il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md).
+il diario esteso è in [`SESSION_NOTES.md`](SESSION_NOTES.md) (la serata del
+2026-11-17 è nella sezione 15).
 
 ---
 
 ## Ripresa in 30 secondi
 
-- Firmware ESP32 principale: `c64esp32Cart`, già compilato e caricato su
-  `/dev/ttyACM0` con FQBN `esp32:esp32:mhetesp32minikit`.
+- **Il progetto funziona su hardware reale** (2026-11-22): 27C512 programmata
+  con il bootstrap nuovo negli 8 banchi, la C64 autostarta sul menu di avvio
+  a schermo pieno, la voce `1` carica `espnewsauto.prg` (news con immagini
+  PETSCII che scorrono), la voce `2` carica `espsamauto.prg` (menu SAM a 5
+  voci, SAM TALK e SAM NEWS funzionanti).
+- **Menu di avvio** (nella EPROM): cornice azzurra come gli altri menu, titolo
+  `C64 ESP32 CARTRIDGE` giallo, `BY M.ANGELINI` grigio chiaro,
+  `CHOOSE THE MENU TO LOAD`, `1) MENU WITHOUT SAM`, `2) MENU WITH SAM`,
+  `PRESS 1 OR 2`; dopo la scelta stampa `LOADING ESPNEWSAUTO.PRG`. Template
+  40x25 generato da `tools/make_boot_menu.py` -> `boot_menu.inc`.
+- **EXROM**: il firmware la tiene **bassa** (EPROM mappata) all'avvio e la alza
+  **solo** al comando 112 del loader, senza timeout (con l'ESP32 alimentato
+  via USB e la C64 accesa dopo, la EPROM deve restare leggibile). Un `112`
+  "spurio" (bus flottante con C64 spenta) viene annullato se entro 5 s non
+  arriva il comando 51/53.
+- **Pulsante di reset della cartuccia**: funziona. Il net `iRST` va solo a
+  GPIO15 (non al `/RESET` della C64): il firmware lo legge in polling con
+  debounce e fa reset di ESP32 + C64 -> si riparte dal menu del bootstrap.
+- Firmware ESP32: **88% flash / 21% RAM** (`--build-property
+  build.partitions=no_ota`), flashato su `/dev/ttyACM0`.
+- **SAM NEWS: testo completo e scorrevole** (2026-11-23): il player a `$0801`
+  mostra il testo in una finestra di 22 righe con scroll + karaoke (evidenza
+  gialla), il firmware invia fino a 4000 caratteri (tabella pezzi a `$B800`,
+  tetto 255 pezzi). Fix `tbl_entry` (overflow a 8 bit oltre 63 pezzi) e
+  highlight aggiornato senza ridisegnare tutta la finestra (niente ritardo).
+- **Conversione simboli per SAM**: `% $ + - &` diventano parole (percento,
+  dollari, piu', meno/e, ...); l'apostrofo resta nel testo e l'elisione
+  italiana (`l'economia` -> "leconomia") la gestisce `it2sam.c`.
 - Ultima build C64 completa: codice fino a `$CFFB` (5 byte liberi in
-  `$C000-$CFFF`).
+  `$C000-$CFFF`): ogni nuova funzione richiede refactoring.
 - La SD della cartuccia è la **7.4G label `8074-0EDB`** (mount tipico
-  `/run/media/matteo/8074-0EDB`). Alla fine della sessione era stata scollegata.
-- Sulla SD devono esserci `espnewsauto.prg` (root) e i file rinominati; i PRG
-  principali sono stati copiati con gli hash indicati sotto.
-- È stato aggiunto il **bootstrap EPROM 8K**: `bootstrap.asm` →
-  `c64esp8kBOOT.bin` (8192 byte).
+  `/run/media/matteo/8074-0EDB`): root con `espnewsauto.prg`,
+  `espsamauto.prg`, `samplayer.prg`, `BOOTSD`.
+- **Prossimo lavoro** (in ordine): (a) ruotare le credenziali rimaste nella
+  storia Git pubblica; (b) fix cosmetico `_` -> `←` nella lista directory;
+  (c) screenshot reale della pagina HELP; (d) test rimasti (vedi
+  [Test da fare](#test-da-fare--prossimi-passi)); (e) PR `pi-work -> main`.
+- Repository: <https://github.com/matt199394/c64esp32cart> (pubblico, Issues
+  abilitate). `main` = `4cedc61`, `pi-work` avanti di vari commit (sessione
+  SAM + questa).
 - **2026-11-17: bootstrap provato su hardware reale e funzionante**: la C64
   autostarta da EPROM, il loader alza EXROM (comando 112), carica
   `espnewsauto.prg` dalla SD e parte il menu.
@@ -99,16 +132,20 @@ jumper, come si faceva con `c64esp8kROM.bin`.
 
 | File | Dimensione | SHA-256 |
 |---|---:|---|
-| `c64esp32menu_c000_cart.prg` | 4097 | `3d17e8a7bd14599eca27f6176c48fbaaffbf4a548c7d8b70591159951a58ffb2` |
-| `espnewsauto.prg` | 4160 | `5f4b00d150778e61429d6688201126850869142ae19d5d704ec90c39660469ea` |
-| `c64esp8kROM.bin` | 8192 | `5b086cdf195fda9811d42f1ca084c2826aa35b491d80268dbe9a89931f047da0` |
-| `c64esp8kBOOT.bin` | 8192 | `66cd34285219a18c6cb903c7d49a060a4538c5548049e8c76df01f9cb417fb5e` |
+| `c64esp8kBOOT.bin` | 8192 | `75847448759a74fe6a7731b86d5aa9ac4111240909068a71180211aa7c986b2a` |
+| `W27C512_c64esp8kBOOT.bin` | 65536 | `c5b8f9275a98adc3019e947ea9a56855c7af0015349540ba96bd4ac6cc3f7ac3` |
+| `boot_sd.prg` | 2725 | `b09fe48eb70269e224ecd8ad77ff259e123bc1c6f4140f5fb1cf1930b8c20fe0` |
+| `espnewsauto.prg` | 4160 | `9324f1a2e2cd6c83b1f5dcef50176a8097a32e63f060f158610cdc252c2b0f76` |
+| `espsamauto.prg` | 4011 | `b7b5532a9ecf8c47f5f8904f0690c4d27fc3aadb571ac561265d4c7a8d1d56a3` |
+| `samplayer.prg` | 1773 | `e441d53b1022d55ec9122e33f93b3aab8527631c41b93da3e9656b14e3730e54` |
 
-`c64esp32menu_c000_cart.prg` e `espnewsauto.prg` sono gli stessi file usati per
-la SD (quando la SD è inserita, verificare con `sha256sum`).
+`c64esp8kBOOT.bin` e' il bootstrap + menu di avvio (loader + template
+`boot_menu.inc`, ~2,1 KB su 8 KB); l'immagine 64K e' lo stesso contenuto
+replicato nei banchi 0-7 (`tools/make_eprom_image.sh all`).
 
-`c64esp8kROM.bin` è la build storica con tutto il menu incorporato.
-La soluzione EPROM consigliata è `c64esp8kBOOT.bin`.
+`espnewsauto.prg`, `espsamauto.prg` e `samplayer.prg` sono i PRG nella root
+della SD devono combaciare: dopo una ricompilazione ricopiarli e verificare con
+`sha256sum`.
 
 ### Programmazione 27C512 (TL866II+)
 
@@ -123,7 +160,8 @@ cmp /tmp/W27C512_verify.bin W27C512_c64esp8kBOOT.bin
 ```
 
 Immagine master: 65536 byte, sha256
-`193b32b287a80974e57efec42c1fc14c13755ef5dd729ce62d4335ac7cd28ea8`.
+`c5b8f9275a98adc3019e947ea9a56855c7af0015349540ba96bd4ac6cc3f7ac3`
+(programmata e verificata il 2026-11-22, read-back identico).
 Se il pin test segnala `Bad contact on pin:...` (tipicamente 25-28 o 1),
 la EPROM e' nel ZIF solo parzialmente: riaprire la leva, raddrizzare i
 piedini e ripetere.
@@ -178,9 +216,12 @@ C64 richiede refactoring o spostamento di codice.
 - `90..105` NEWS + art
 - **`112` bootstrap: EXROM alto** (`CLED LOW`), usato dal loader EPROM
 
-Il setup ESP32 tiene `CLED HIGH` per far partire la EPROM, poi dopo l'init
-(aspetta 1.5 s) e `buildDirectoryList()` alza EXROM come fallback. Il loader
-EPROM invia comunque il comando 112 appena possibile.
+Il firmware tiene `CLED HIGH` (EXROM basso, EPROM mappata) dal setup e la
+alza **solo** quando il loader manda il comando 112, cioe' dopo aver copiato
+se' stesso a `$C000`. Il vecchio `delay(1500)` + `CLED LOW` e' stato tolto
+(poteva togliere la ROM mentre la C64 la stava ancora leggendo). Nessun
+timeout: con l'ESP32 alimentato via USB la EPROM deve restare mappata anche
+se la C64 viene accesa minuti dopo.
 
 ---
 
@@ -264,9 +305,25 @@ EPROM invia comunque il comando 112 appena possibile.
 ## Test da fare / prossimi passi
 
 **Fatto (2026-11-17):** bootstrap provato su hardware reale, EPROM programmata
-(`W27C512_c64esp8kBOOT.bin`, bootstrap negli 8 banchi) e verificata; menu
-avviato dal bootstrap; PR #1 `pi-work → main` mergiata con squash (`2a27359`)
-e `pi-work` riallineato a `main`.
+e verificata; menu avviato dal bootstrap; PR #1 `pi-work → main` mergiata con
+squash (`2a27359`) e `pi-work` riallineato a `main`.
+
+**Fatto (2026-11-21/22):** menu SAM a 5 voci, SAM TALK e SAM NEWS (karaoke,
+fonte selezionabile) su hardware; bootstrap con menu di avvio 1/2 a schermo
+pieno (cornice, titolo giallo) programmato e verificato; EXROM mappata fino al
+comando 112; pulsante di reset della cartuccia funzionante; HELP separato per
+la build SAM; testi del menu di avvio in inglese.
+
+**Fatto (2026-11-23):** SAM NEWS legge il testo completo (non piu' troncato a
+~780 caratteri): il firmware manda fino a 4000 caratteri e il player scorre
+con karaoke (finestra 22 righe, evidenza gialla). Corretto il blocco su testi
+lunghi (overflow `tbl_entry` a 8 bit oltre 63 pezzi) e il ritardo dell'evidenza
+(l'avanzamento non ridisegna piu' tutta la finestra se non serve lo scroll).
+Aggiunta conversione simboli `% $ + - &` in parole (it/en) e gestione
+elisione dell'apostrofo in `it2sam.c` (`l'economia` -> "leconomia"), con
+l'apostrofo che resta visibile nel testo mostrato. Nuovi test emulatore
+(`scroll_test.asm`, `tbl_test.asm`) e `karaoke_test.asm` aggiornato. Provato
+su hardware: ANSA e BBC lette per intero, karaoke sincronizzato.
 
 1. **Fix cosmetico lista directory**: nella directory i caratteri `_` dei nomi
    file vengono mostrati come `←` (es. `all←gif←koa←split` invece di
@@ -309,10 +366,20 @@ e `pi-work` riallineato a `main`.
 
 ## Git
 
-- `main`: stabile. Contiene il merge (squash) della PR #1, commit `2a27359`.
-- `pi-work`: branch di sviluppo, riallineato a `main` dopo il merge.
+- `main`: stabile. Contiene i merge (squash) delle PR #1 (`2a27359`) e #2
+  (`4cedc61`).
+- `pi-work`: branch di sviluppo. Contiene la sessione SAM (`25e6be9`) e questa
+  sessione: EXROM/BOOTSD (`df9d2a0`, `efac6a3`, `4cf04d9`), pulsante di reset
+  (`5315b7c`), menu di avvio a schermo pieno + HELP SAM (`fde4913`), testi in
+  inglese (`ada7fe5`), righe del menu SAM centrate (`0d17d74`).
+- Regola: `main` si aggiorna **solo** con PR da `pi-work` (squash merge); dopo
+  il merge `pi-work` va riallineato:
+  `git reset --hard origin/main && git push --force-with-lease`.
 - Push di sviluppo: `git push origin pi-work`.
-- Storia: la cronologia dettagliata pre-squash è nel PR #1 su GitHub.
-- Non committare mai `c64esp32Cart/secrets.h` né `firmware_backup/`.
-- I binari di build nella root sono in `.gitignore` (incluso
-  `c64esp8kBOOT.bin`); i sorgenti e questo riepilogo sì.
+- Storia: la cronologia dettagliata pre-squash è nelle PR #1 e #2 su GitHub.
+- Non committare mai i sorgenti di SAM (`sam.c/h`, `render.*`, `reciter.*`,
+  `*Tabs.h`, `debug.*`: software commerciale), `c64esp32Cart/secrets.h` né
+  `firmware_backup/`.
+- I binari di build nella root sono in `.gitignore` (inclusi
+  `c64esp8kBOOT.bin` e `W27C512_*.bin`); `boot_sd.prg` **e'** tracciato
+  (artefatto di riferimento del loader). I sorgenti e questo riepilogo sì.

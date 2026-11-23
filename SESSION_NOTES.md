@@ -1,8 +1,9 @@
 # C64 ESP32 Cart — note sessione `pi-work`
 
-Ultimo aggiornamento: 2026-11-16
+Ultimo aggiornamento: 2026-11-17 (sessione serale, vedi sezione 15)
 Branch di sviluppo: `pi-work`  
-`main`: versione stabile, il merge verrà fatto solo alla PR finale.
+`main`: versione stabile; contiene il merge delle PR #1 e #2
+(commit `4cedc61`). Repository **pubblico** su GitHub con Issues abilitate.
 
 Questo file serve a recuperare il contesto della sessione di lavoro.
 
@@ -398,7 +399,10 @@ Non è OCR: è la pagina Televideo convertita in immagine Koala.
 
 ## 8. Git e sicurezza
 
-Il repository GitHub è ora **privato**.
+Il repository GitHub è **pubblico** dal 2026-11-17:
+<https://github.com/matt199394/c64esp32cart> (vedi sezione 15.8).
+Le credenziali elencate piu' sotto sono quindi da considerarsi esposte e
+**vanno ruotate**.
 
 Branch di lavoro:
 
@@ -406,7 +410,7 @@ Branch di lavoro:
 pi-work
 ```
 
-`main` resta stabile; il merge verrà fatto con una PR quando il progetto sarà pronto.
+`main` resta stabile; si aggiorna solo con PR da `pi-work` (squash merge).
 
 ### File ignorati
 
@@ -692,3 +696,471 @@ nella pagina `$C000-$CFFF`.
 - Tra un'immagine Koala e l'altra lo schermo viene pulito/annerito
   (`slide_text_mode` chiama `clear_screen_text`) per evitare caratteri residui
   durante il passaggio bitmap -> testo -> bitmap.
+
+---
+
+## 15. Sessione 2026-11-17 (serale) — EPROM, PR e repository pubblico
+
+Riepilogo della serata: dalla EPROM che non partiva al repository pubblico con
+documentazione completa. Tutto verificato su hardware reale.
+
+### 15.1 Schermo blu con bordo celeste: banco EPROM e jumper
+
+Sintomo: accensione con la 27C512 programmata, nessun avvio della cartuccia.
+
+Dalla netlist KiCad (`c64esp32crt1.1_kicad7/ESP32Hardware.kicad_pcb`):
+
+| Segnale EPROM | Collegamento |
+|---|---|
+| pin 20 `/CE` | GND fisso |
+| pin 22 `/OE` | jumper **J9**: pin1 `/ROML`, pin3 `/ROMH` |
+| pin 26 `A13` | pull-up `R9` -> +5V + jumper **J4** -> GND |
+| pin 27 `A14` | pull-up `R10` -> +5V + jumper **J5** -> GND |
+| pin 1 `A15` | pull-up `R11` -> +5V + jumper **J6** -> GND |
+
+Quindi **senza jumper la EPROM legge il banco 7** (`0xE000`): se il bootstrap
+sta solo nel banco 0 la C64 non trova `CBM80` e va al BASIC normale.
+
+Attenzioni emerse:
+- `J3` (EXROM -> GND) tiene la cartuccia sempre mappata e rende inutile il
+  comando 112: in uso normale va **aperto**;
+- `J9` deve stare su **ROM-L** (pin 1-2) per una cartuccia 8K a `$8000-$9FFF`;
+- `J2` (`GAME`) va **aperto**.
+
+### 15.2 `tools/make_eprom_image.sh`
+
+Nuovo script: immagine 64K per la 27C512 da un binario da 8K.
+
+```bash
+tools/make_eprom_image.sh 0 c64esp8kBOOT.bin        # banco 0, resto 0xFF
+tools/make_eprom_image.sh all c64esp8kBOOT.bin      # replicato negli 8 banchi
+```
+
+La modalita' `all` rende la EPROM indipendente dai jumper: e' quella usata per
+la cartuccia definitiva. Programmazione con TL866II+:
+
+```bash
+minipro -p 'W27C512@DIP28' -z
+minipro -p 'W27C512@DIP28' -w W27C512_c64esp8kBOOT.bin
+minipro -p 'W27C512@DIP28' -r /tmp/verify.bin && cmp /tmp/verify.bin W27C512_c64esp8kBOOT.bin
+```
+
+Contatti del ZIF: piu' volte `Bad contact on pin:1` / `pin:25..28` -> basta
+riaprire la leva, raddrizzare i piedini e reinserire; il read-back deve
+combaciare byte per byte.
+
+### 15.3 Build di debug del bootstrap (`-DDBGBOOT`)
+
+Per capire dove si fermava il loader:
+
+```bash
+acme -DDBGBOOT=1 -o c64esp8kBOOT_dbg.bin bootstrap.asm
+```
+
+Segnali a schermo (colore del bordo + carattere): bordo bianco/sfondo nero =
+EPROM mappata; `2` ciano = loader a `$C000`; `3` verde = risposta al comando
+112; `4` giallo = nome file inviato; `5` viola = PRG ricevuto; `6` verde
+chiaro = entry point ricevuto. Poi stampa i primi 16 byte a `$0801`, l'ultima
+pagina scritta, l'entry point e un **checksum a 16 bit** del PRG (`5A47` per
+`espnewsauto.prg`), e aspetta un tasto prima del salto.
+
+### 15.4 Il bug vero: CLR / relink BASIC nel bootstrap
+
+Il bootstrap faceva, subito prima di `jmp (PRG_ENTRY)`:
+
+```asm
+        jsr $a659       ; CLR
+        jsr $a533       ; relink righe BASIC
+```
+
+Il coldstart da cartuccia inizializza **solo il KERNAL** (`IOINIT`, `RAMTAS`,
+`RESTOR`, `CINT`): `TXTTAB`/`VARTAB`/`ARYTAB`/`STREND` possono contenere
+spazzatura, quindi `CLR`/`LINKPRG` andavano in crash. Sintomo: dopo il
+caricamento del PRG lo schermo restava fermo (i marker `23456` non venivano
+nemmeno cancellati), nessuna reazione ai tasti, menu mai avviato.
+
+Rimosse entrambe le chiamate: il PRG fa da solo l'init BASIC che gli serve.
+Con il fix il menu parte dalla EPROM bootstrap.
+
+Aggiunta anche una nota nel sorgente e nei documenti, per non reintrodurle.
+
+### 15.5 Immagine definitiva
+
+```bash
+acme bootstrap.asm                                  # c64esp8kBOOT.bin (8192 byte)
+tools/make_eprom_image.sh all c64esp8kBOOT.bin       # W27C512_c64esp8kBOOT.bin
+```
+
+| File | Dimensione | sha256 |
+|---|---:|---|
+| `c64esp8kBOOT.bin` | 8192 | `66cd34285219a18c6cb903c7d49a060a4538c5548049e8c76df01f9cb417fb5e` |
+| `W27C512_c64esp8kBOOT.bin` | 65536 | `193b32b287a80974e57efec42c1fc14c13755ef5dd729ce62d4335ac7cd28ea8` |
+
+Scritta e verificata (read-back identico, banchi 0-7 tutti uguali al binario).
+
+### 15.6 Documentazione e immagini
+
+- `README.md` **riscritto in inglese**: funzioni, hardware/pinout, capitolo
+  **Schematic**, menu e tasti, **Screenshot**, jumper e banchi EPROM, flusso di
+  avvio, firmware ESP32, `secrets.h` (WiFi/OpenWeather/NTP/NewsAPI), SD,
+  formato Koala, rilocazione SID (`$4000`/`$9000` + maschere), arte PETSCII,
+  programmazione 27C512, comandi di build, layout memoria, troubleshooting.
+- **Screenshot reali** (snapshot VLC del video del C64) in
+  `docs/screenshots/`: `main.jpg`, `dir.jpg`, `supermon.jpg`, `news-src.jpg`,
+  `news-bg.jpg`, `news-petscii.jpg`, `weather.jpg`, `sid.jpg`, disposte in una
+  tabella 2x4 da 420 px. `tools/render_menu.py` resta come fallback
+  (`docs/renders/`, ignorato da git).
+- Foto cartuccia `sideUp1/sideUp2/sideBottom` ridotte a 520 px e messe in una
+  tabella a tre colonne con didascalie; `schematic.jpg` da 1094 KB a 288 KB.
+- La schermata meteo e' stata **ritoccata a pixel**: nome della citta'
+  sostituito con `ROMA` (glifi presi dalla riga sottostante della stessa foto),
+  per non pubblicare la localita' dell'autore.
+
+### 15.7 Privacy: coordinate spostate in `secrets.h`
+
+- Rimosse dal firmware `String lat/lon` con le coordinate di casa.
+- Ora si usano `openweatherLat` / `openweatherLon` da `secrets.h`
+  (placeholder `xxxxx` in `secrets.example.h`).
+- `weatherLocationConfigured()`: se non configurate il firmware non chiama
+  l'API e stampa `Meteo: lat/lon non configurate in secrets.h`.
+
+### 15.8 Git: PR, merge e repository pubblico
+
+| Evento | Commit |
+|---|---|
+| PR #1 `pi-work -> main` (13 commit) squash-merged | `2a27359` |
+| PR #2 (privacy coordinate + screenshot ritoccato) squash-merged | `4cedc61` |
+| `pi-work` riallineato a `main` dopo ogni merge | `4cedc61` |
+
+- Visibilita' cambiata a **public** con
+  `gh api -X PATCH repos/matt199394/c64esp32cart -f visibility=public`
+  (in gh 2.46 il flag `--accept-visibility-change-consequences` non esiste).
+- **Issues abilitate** (`-F has_issues=true`).
+- Verificato in anonimo: `secrets.h` e `firmware_backup/` rispondono 404.
+
+### 15.9 Da fare alla prossima sessione
+
+1. **Ruotare le credenziali** ancora nella storia Git ora pubblica:
+   password WiFi `Home&Life SuperWiFi-0B6D`, OpenWeather `be8d2977…`,
+   NewsAPI `a8255caf…` (commit `03bf297`, `346eeb9`, `37bf9bb`, `2dded14`),
+   poi aggiornare `c64esp32Cart/secrets.h`.
+2. **Riflashare l'ESP32** (ultima modifica: lat/lon in `secrets.h`).
+3. **Fix cosmetico directory**: `_` mostrato come `←` (`asciiToPET()` lascia
+   passare ASCII `$5F`, che in PETSCII e' la freccia) -> mappare su `$A4` o
+   ripiegare su `-`.
+4. Test funzionali rimasti (uscita SID con SPACE, paginazione directory,
+   sfondi NEWS, Supermon, nomi lunghi).
+5. Manca uno screenshot reale della pagina **HELP**.
+
+---
+
+## 16. 2026-11-21 (sera) — BOOTSD su EEPROM e EXROM solo col comando 112
+
+### 16.1 Immagine 64K del bootstrap con menu
+
+Il bootstrap con il menu `1) menu senza sam` / `2) menu con sam` (loader in
+`boot_loader.inc`) e' gia' quello che finisce nella EPROM: `bootstrap.asm`
+include lo stesso `.inc` di `bootstrap_sd.asm`, quindi non serve "scrivere
+`boot_sd.prg`" nella EPROM (un PRG a `$0801` non puo' autostartare da
+`$8000`: serve la firma `CBM80`, che sta solo in `bootstrap.asm`).
+
+Build riverificata in questa sessione:
+
+```bash
+acme bootstrap.asm                                  # c64esp8kBOOT.bin
+tools/make_eprom_image.sh all c64esp8kBOOT.bin /tmp/W27_new.bin
+cmp /tmp/W27_new.bin W27C512_c64esp8kBOOT.bin       # identici
+```
+
+| File | Byte | sha256 |
+|---|---:|---|
+| `c64esp8kBOOT.bin` | 8192 | `9f4b78c6493092b0a70f74306c7dccf54ec33789fa10fd00f1e82a005f424110` |
+| `W27C512_c64esp8kBOOT.bin` | 65536 | `15460daa1b6280700cea6f7fd08c1a61c5664e4adcc87e5ec3d3a5e3c95e2d09` |
+
+Verificato anche che i banchi 0-7 sono identici agli 8K e che le stringhe del
+menu sono presenti nel binario. **Resta solo da programmare la 27C512**:
+
+```bash
+minipro -p 'W27C512@DIP28' -z
+minipro -p 'W27C512@DIP28' -w W27C512_c64esp8kBOOT.bin
+minipro -p 'W27C512@DIP28' -r /tmp/W27C512_verify.bin
+cmp /tmp/W27C512_verify.bin W27C512_c64esp8kBOOT.bin
+```
+
+### 16.2 Firmware: EXROM resta basso finche' non arriva il comando 112
+
+Problema: il setup faceva `delay(1500)` + `CLED LOW` dopo
+`buildDirectoryList()`. Se la C64 partiva in ritardo (o l'ESP32 finiva l'init
+prima), la EPROM spariva mentre il `coldstart` la stava ancora eseguendo ->
+C64 al BASIC senza cartuccia.
+
+Modifiche in `c64esp32Cart/c64esp32Cart.ino`:
+
+- `exromMapped` e funzione `exromRelease(reason)` che alza EXROM (`CLED LOW`)
+  una volta sola e logga `EXROM alto (<motivo>): $8000-$9FFF torna RAM`;
+- setup: `CLED HIGH` (EPROM mappata) resta, `delay(1500)+CLED LOW` **rimossi**;
+  al loro posto log `EXROM basso: EPROM mappata, attendo il comando 112`;
+- `case 112` usa `exromRelease("comando 112")`;
+- **niente timeout** (prima avevo messo un fallback a 60 s poi tolto): in
+  banco l'ESP32 e' alimentato via USB e la C64 si accende dopo; con un
+  timeout la EPROM spariva e la cartuccia non partiva piu'. Alzare EXROM a
+  mano (a boot ultimato) sarebbe comunque innocuo, il loader e il menu
+  girano gia' a `$C000`.
+
+Compila: 87% flash / 21% RAM (`--build-property build.partitions=no_ota`).
+
+### 16.3 Da verificare su hardware (quando la scheda e' collegata)
+
+1. Log atteso, nell'ordine: `EXROM basso: EPROM mappata, attendo il comando
+   112` -> `done!` -> (comparsa del menu di avvio) -> `CMD 112` ->
+   `EXROM alto (comando 112): $8000-$9FFF torna RAM` -> `CMD 51` ->
+   `PRG: ... load $0801, entry ...` -> `CMD 60`.
+2. Con la EPROM vecchia (senza menu) il firmware nuovo deve funzionare lo
+   stesso (manda 112 subito).
+3. Senza cartuccia inserita: nessun `CMD 112`, dopo 60 s deve comparire
+   `EXROM alto (timeout, nessun comando 112)`.
+
+Nota: `bootsd` nella root e' un build vecchio (749 byte, senza menu) e non e'
+tracciato: si puo' cancellare, il sorgente `boot_sd.prg` si rigenera con
+`acme bootstrap_sd.asm`.
+
+### 16.4 Pulsante di reset della cartuccia (net iRST)
+
+Osservato su hardware: il pulsante **RESET del modulo ESP32** resetta anche la
+C64 (setup pulsa `GPIO21`) e la cartuccia riparte dal menu del bootstrap; il
+pulsante **sulla cartuccia** invece non faceva nulla.
+
+Analisi dell'hardware (`c64esp32crt1.1_kicad7/ESP32Hardware.kicad_pcb`, net del
+PCB):
+
+| Net | Collegato a |
+|---|---|
+| `iRST` | `SW1` (pulsante), `U5` pad 37 = **GPIO15** — e basta |
+| `oRST` | `U5` pad 27 = GPIO21, ingresso di `U7` (74LS14) -> C64 `/RESET` |
+
+Quindi il pulsante della cartuccia **non e' cablato al /RESET della C64**:
+senza firmware non puo' fare niente. Va gestito nell'ESP32.
+
+Implementazione (`c64esp32Cart/c64esp32Cart.ino`):
+
+- `pollResetButton()` chiamata a ogni giro del `loop`:
+  - **polling** con debounce (40 ms di livello basso continuo, poi riarmo),
+    niente `attachInterrupt`: l'ISR su GPIO15 (pin di strapping MTDO) era la
+    causa dei riavvii spuri durante l'audio a 11 kHz;
+  - alla pressione logga `RESET: pulsante della cartuccia premuto`, mette la
+    C64 in reset (`digitalWrite(oC64RST, !invert_Reset)`), aspetta 50 ms e fa
+    `ESP.restart()`;
+  - al riavvio `setup()` rimappa la EPROM (`CLED HIGH`) e ripulsa il reset
+    della C64 (250 ms) -> si riparte dal menu del bootstrap.
+- `isr_reset()` resta nel file ma non e' piu' agganciata (riferimento storico).
+- Limite noto: durante una frase SAM (`samPlay` blocca il `loop`) il pulsante
+  non viene letto; fuori da quei casi risponde subito.
+
+**Lingua:** i testi del menu di avvio sono in **inglese** (come il resto del
+programma): `CHOOSE THE MENU TO LOAD`, `1) MENU WITHOUT SAM`,
+`2) MENU WITH SAM`, `PRESS 1 OR 2`, `LOADING ESPNEWSAUTO.PRG`,
+`8K EPROM + ESP32 SD CARD`.
+
+Compila 87% flash / 21% RAM, flashato.
+
+### 16.5 Menu di avvio a schermo pieno + HELP della build SAM
+
+Richiesta di Matteo: cornice e colori come gli altri menu, titolo
+`C64 ESP32 CARTRIDGE` centrato in giallo, sotto `BY M.ANGELINI` in grigio
+chiaro, testi italiani; e HELP della build **con SAM** allineato alle sue 5 voci
+(era ancora quello del menu completo).
+
+**Menu di avvio.** Prima era stampato con CHROUT (`msg_menu`), adesso e' un
+template 40x25:
+
+- `tools/make_boot_menu.py` -> `boot_menu.inc`: 1024 byte di screen code +
+  1024 di colori (padding a 1024 per copiare 4 pagine intere sia in
+  `$0400-$07FF` sia in `$D800-$DBFF`, entrambe aree da 1K);
+- `boot_loader.inc`: `menu_boot` mette sfondo nero, bordo azzurro,
+  `$cc=$01` (cursore non lampeggiante), `copy_menu_screen` +
+  `copy_menu_colors`, attende `1`/`2`, poi `PLOT` a riga 15 colonna 6 e stampa
+  `LOADING ESPNEWSAUTO.PRG` / `LOADING ESPSAMAUTO.PRG`;
+- **CHROUT scrive anche la color RAM** usando `$0286` (colore corrente, dopo
+  CINT e' 14 = azzurro): per avere la riga bianca il loader imposta `$0286=1`
+  prima della PLOT;
+- il template sta **fuori** dal blocco `!pseudopc $c000` in `bootstrap.asm` /
+  `bootstrap_sd.asm`: il loader lo legge dal suo indirizzo reale (EPROM
+  `$82xx` oppure PRG caricato dalla SD), come `payload_rom` per il codice.
+  Inserito dopo `BOOT_LEN` per non alterarlo.
+- dimensioni: loader+template stanno in ~2,1 KB degli 8K della EPROM;
+  `boot_sd.prg` passa da 743 a 2718 byte.
+- prova in emulatore (senza ESP32): `x64sc -cart8 c64esp8kBOOT.bin`, con
+  `-keybuf "\x31"`/`"\x32"` per vedere la riga `CARICO ...`.
+
+**HELP SAM.** Aggiunto `helpTextSam` in `c64esp32Cart.ino`; `case 63` sceglie il
+testo in base a `samVariant` (impostato dal comando 113, cioe' prima che il menu
+possa chiedere l'HELP). Elenca SD CARD, HELP, BASIC, SAM TALK, SAM NEWS;
+niente SUPERMON, CLOCK/WEATHER, KOALA, NEWS, SLIDESHOW.
+
+Compila 87% flash / 21% RAM, flashato.
+
+### 16.6 Menu SAM: righe di aiuto centrate
+
+Le quattro righe di aiuto del menu SAM (righe 16, 19, 20, 21) erano a colonna 8
+e sbilanciate a destra. Ora usano `menuCenter()`:
+
+| riga | testo | colonna |
+|---|---|---|
+| 16 | UP/DOWN SELECT - RETURN ENTER | 5 |
+| 19 | SAM TALK: TYPE AND PRESS RETURN | 4 |
+| 20 | SAM NEWS: PICK THE SOURCE | 7 |
+| 21 | TEXT ON SCREEN, RUN/STOP STOPS | 4 |
+
+`tools/render_menu.py` ora rispecchia anche la build SAM (`menu-main-sam.png`)
+e il suo HELP (`menu-help-sam.png`), cosi' si possono confrontare i render con
+le foto reali.
+
+### 16.7 Sorgenti SAM fuori dal repo e switch ENABLE_SAM
+
+Richiesta di Matteo: non committare mai i sorgenti SAM (prodotto commerciale),
+**spiegare come aggiungerli** per compilare e poter scegliere in compilazione
+se includerli o no.
+
+- `git ls-files` verificato: i commerciali (`sam.c/.h`, `render.*`,
+  `reciter.*`, `*Tabs.h`, `debug.*`) restano solo in `.gitignore`; versionati
+  solo `sam_wrap.c/.h` (ponte, `SAM_BUF_SECONDS` 2 e `SAM_MAX_CHARS` 16) e
+  `it2sam.c/.h` (regole italiane -> fonemi).
+- **`SAM_SOURCES.md`** (nuovo): elenco degli 11 file da copiare in
+  `c64esp32Cart/`, provenienza (port C di SAM, funzioni `SetInput`/`SAMMain`/
+  `GetBuffer`), le **due patch obbligatorie** documentate con il codice
+  (`buffer == 0` in `sam.c` `Init()`, `bufferpos/50 + k < SAM_BUF_BYTES` in
+  `render.c` `Output8BitAry()`), misure di flash/RAM e cosa funziona senza voce.
+- **`tools/check_sam_sources.sh`**: controlla i file e le due patch, esce 1 con
+  l'elenco di cosa manca.
+- **`ENABLE_SAM`**: macro in testa a `c64esp32Cart.ino`, stessa autodetect in
+  `sam_wrap.c` (`__has_include("sam.h")`). Default: 1 se i sorgenti ci sono, 0
+  altrimenti; forzabile con
+  `--build-property "build.extra_flags=-DENABLE_SAM=0"`.
+  Con `ENABLE_SAM=0` viene escluso tutto il blocco voce (`triggerNMIfast`,
+  `samSendSample`, `samPlay`, `samAlloc`, `samRelease`, `SamPiece`/`samPieces`,
+  `samComputePieces`, `samSpeak`, `samReceiveLine`, `samFetchNews`,
+  `samSpeakNews`, `samSendNewsText`) e al suo posto ci sono stub che loggano
+  `SAM: questa build non include SAM` e mandano `sendZeroBlock()`, cosi' il C64
+  non resta in attesa.
+- Dimensioni misurate: **con SAM 88% flash / 21% RAM**, **senza SAM 85% / 20%**
+  (~30 KB flash e ~4 KB RAM in meno).
+- Verificato compilando una copia della cartella **senza** i file SAM: compila
+  e linka (85%).
+- Log d'avvio (flashato e verificato): `SAM: voce inclusa (ENABLE_SAM=1)`.
+
+### 16.8 README allineato alle funzioni SAM
+
+Aggiunte al `README.md`:
+
+- **Features**: SAM TALK, SAM NEWS (testo delle news scritto a video mentre
+  SAM lo legge, evidenziazione karaoke) e la nota sul percorso
+  SAM -> 4 bit -> NMI -> `$D418`;
+- **Menu and keys**: menu della build SAM a 5 voci e tasti (RETURN invia la
+  riga, RUN/STOP ferma la voce, un tasto chiude SAM NEWS);
+- nuova sezione **"SAM: the C64 talks (TALK / NEWS)"**: come si abilita
+  (menu di avvio 2, comandi 113-119, `samplayer.prg` nella root della SD),
+  dettaglio di SAM TALK (max 63 caratteri, pezzi da 16, prefisso `/en` o
+  `/it`), catena completa di SAM NEWS (fonte -> 117 -> 118 con testo a `$A000`
+  e tabella pezzi a `$A500` -> stampa -> karaoke), preprocessing del testo
+  (fonte in maiuscolo, iniziali dopo il punto, numeri in parole, accenti,
+  taglio a ~800 caratteri all'ultimo spazio), limiti (4 bit, malloc 44 KB);
+- sezione **sorgenti e switch** (`SAM_SOURCES.md`, `check_sam_sources.sh`,
+  `ENABLE_SAM`, 88% con SAM / 85% senza);
+- **memory layout**: aggiunte le aree del player SAM (`$A000`, `$A500`,
+  `$0478`/`$D878`).
+
+### 16.9 Avvertenza legale su SAM
+
+Richiesta di Matteo: specificare nel README che SAM resta software commerciale,
+non puo' essere incluso nel repository ne' usato a fini commerciali senza
+autorizzazione del proprietario dei diritti.
+
+- `README.md`: riquadro in testa alla sezione "SAM: the C64 talks (TALK /
+  NEWS)" (proprieta', non incluso, non ridistribuito, divieto d'uso
+  commerciale, responsabilita' di chi copia i sorgenti in locale) + paragrafo
+  **"Third-party, not included"** in *Credits*, che chiarisce anche che tutto
+  il resto del codice e' dell'autore; rimando dal bullet `SAM TALK` di
+  *Features*.
+- `SAM_SOURCES.md`: nuova sezione **"Avvertenza legale (leggere prima di
+  copiare i file)"** con gli stessi punti, piu' il motivo per cui il firmware
+  compila anche senza SAM (`ENABLE_SAM`).
+- `AGENTS.md`: la regola su SAM dice esplicitamente "commerciale e
+  proprietario" e vieta l'uso commerciale senza autorizzazione.
+
+## 17. 2026-11-23 — SAM NEWS: testo completo con scroll, fix blocco e simboli
+
+Sessione dedicata a SAM NEWS. Partenza: il firmware troncava il testo a ~780
+caratteri e il player mostrava una sola schermata (~24 righe); obiettivo:
+riprodurre il testo completo.
+
+### 17.1 Testo completo (firmware)
+
+- `#define SAM_MAX_TEXT 4000` e `samPieces[80] -> samPieces[256]`.
+- In `samFetchNews()` il cap passa da 780 a 4000 (taglio all'ultimo spazio);
+  in `samSendNewsText()` il tetto del testo mostrato passa da 800 a
+  `SAM_MAX_TEXT + 48`, con `np` limitato a 255 (il contatore pezzi sul C64 e'
+  un byte).
+- La tabella pezzi si sposta da `$A500` a `$B800` per lasciare spazio al testo
+  (il testo sta in `$A000-$B7FF`).
+
+### 17.2 Player C64 con scroll (sam_player.inc)
+
+- Costanti nuove: `tbl_src=$B800`, `win_rows=22`, `win_chars=880` (righe 3..24).
+- Rimosse `print_text`/`hl_set`/`hl_revert`; aggiunte `div40`,
+  `set_scroll_off`, `hl_setup`, `render_window`, `hl_fill`; `hl_advance`
+  riscritto.
+- `render_window` disegna la finestra direttamente in screen RAM/color RAM
+  (screen code gia' pronti dall'ESP32) e poi evidenzia il pezzo corrente;
+  `hl_setup` calcola gli offset e decide se scorrere (`scroll_line`/
+  `scroll_off`, allineati a 40).
+- `sam_news` ora fa `lda #$36; sta $01` (i PRG autonomi `sam_news.prg` prima
+  scrivevano su ROM BASIC, perche' caricati con `$01=$37`).
+- Check lunghezza blocco NMI address-aware: rifiuta i blocchi con
+  `dest + len >= $C000` (prima era un `cmp #$0c` fisso che avrebbe scartato i
+  blocchi testo lunghi); timeout `recv_wait` alzato da ~34 s a ~51 s
+  (`cmp #12` invece di `cmp #8`).
+
+### 17.3 Bug "BBC si blocca dopo una riga" — tbl_entry overflow
+
+- `tbl_entry` calcolava `A*4` con due `asl` a 8 bit: oltre 63 pezzi l'offset
+  andava in overflow e `load_cur`/`hl_setup` leggevano voci sbagliate della
+  tabella -> campioni errati -> il karaoke si fermava. Con BBC (piu' di 63
+  pezzi) il blocco arrivava subito dopo il primo scroll.
+- Fix: offset a 16 bit (`sta tmpoff; lda #0; sta tmpoff+1; asl/rol x2`) che
+  supporta 255 pezzi. Nuovo test `tools/emu/tbl_test.asm` (pezzi 100 e 255).
+
+### 17.4 Ritardo dell'evidenza gialla
+
+- `hl_advance` ridisegnava tutta la finestra (880 celle schermo + 880 color
+  RAM, ~70-100 ms) a ogni pezzo, quindi l'evidenza restava indietro rispetto
+  alla voce.
+- Fix: `hl_advance` salva il pezzo precedente, chiama `hl_setup`, e se
+  `scroll_line` non cambia fa solo `hl_fill` sul vecchio (azzurro) e sul nuovo
+  (giallo); `render_window` (scroll + ridisegno completo) gira solo quando
+  serve lo scroll. `hl_fill` ora prende il colore in A (per riusarlo).
+
+### 17.5 Conversione simboli per SAM
+
+- Nuova `convertSymbols(in, italian)` nel firmware, applicata in
+  `samFetchNews()` (dopo `convertNumbers`) e in `samReceiveLine()`:
+  `% -> percento/percent`, `$ -> dollari/dollars`, `+ -> piu'/plus`,
+  `& -> e/and`, `- -> meno/minus` se isolato (spazi intorno/inizio), altrimenti
+  spazio (trattino fra parole).
+- Apostrofo: su richiesta resta **visibile** nel testo mostrato. Prima lo
+  rimuovevo da `samNewsText` (display + voce); ora resta e l'elisione italiana
+  la gestisce `it2sam.c` con un `else if (b == '\'') continue;` che concatena
+  senza chiudere la parola (`l'economia` -> si pronuncia "leconomia"). Le
+  contrazioni inglesi le gestisce il Reciter. Verificato con un test C
+  standalone di `it_to_sam`.
+
+### 17.6 Verifiche
+
+- Firmware: 88% flash / 21% RAM, flashato (boot pulito `boot:0x13`).
+- Log seriale hardware: `CMD 118 -> SAM: testo news al C64, 806 byte, 62 pezzi`
+  (ANSA), BBC letta per intero senza blocco.
+- Emulatore (VICE): `karaoke_test.asm` (aggiornato), `scroll_test.asm` e
+  `tbl_test.asm` nuovi; tutti verdi in modo deterministico (bordo verde).
+  Nota: le letture della color RAM nei test vanno mascherate con `AND #$0f`
+  (il nibble alto non e' definito).
+- PRG rigenerati: `samplayer.prg` 1773 (sha256 `e441d53b…`), `sam_talk.prg`
+  1767, `sam_news.prg` 1770; copiati nella SD.

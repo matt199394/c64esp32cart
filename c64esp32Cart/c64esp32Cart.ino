@@ -37,6 +37,31 @@
 
 #include <SPI.h>
 #include <SD.h>
+
+// ---------------------------------------------------------------------------
+// SAM (Software Automatic Mouth) - VOCE
+// SAM e' software COMMERCIALE (SoftVoice/Don't Ask Software): i suoi sorgenti
+// NON sono nel repository, che resta pubblico. Per compilare la voce vanno
+// copiati a mano in questa cartella (vedi SAM_SOURCES.md nella root).
+//
+// ENABLE_SAM: 1 = voce inclusa, 0 = build senza SAM.
+//   - se non e' definito si abilita da solo quando i sorgenti ci sono;
+//   - si puo' forzare da riga di comando con
+//     --build-property "build.extra_flags=-DENABLE_SAM=0"
+// ---------------------------------------------------------------------------
+#ifndef ENABLE_SAM
+  #if __has_include("sam_wrap.h") && __has_include("sam.h")
+    #define ENABLE_SAM 1
+  #else
+    #define ENABLE_SAM 0
+  #endif
+#endif
+
+#if ENABLE_SAM
+extern "C" {
+#include "sam_wrap.h"
+}
+#endif
 //#include "BluetoothSerial.h"
 #include "supermon.h"
 #include "chars.h"
@@ -88,6 +113,44 @@ String months[12]={"january", "february", "march", "april", "may", "june", "july
               
 
 volatile bool dataFromC64 = false;
+
+// ---------------------------------------------------------------------------
+// EXROM / EPROM di bootstrap
+// All'avvio EXROM resta BASSO (CLED HIGH -> transistor ON) perche' la C64 deve
+// poter leggere la EPROM a $8000 (CBM80 + coldstart) e copiare il loader a
+// $C000. Si alza solo quando il loader manda il comando 112, cioe' quando la
+// EPROM non serve piu' e $8000-$9FFF deve tornare RAM.
+// Prima c'era un delay(1500) fisso nel setup: se la C64 partiva in ritardo
+// (o l'ESP32 finiva l'inizializzazione prima) la ROM spariva mentre il
+// coldstart la stava ancora eseguendo.
+// ---------------------------------------------------------------------------
+static bool exromMapped = true;             // true = EPROM mappata a $8000
+static bool bootPending = false;            // 112 ricevuto, aspettiamo il 51
+static uint32_t bootPendingAt = 0;
+#define BOOT_CONFIRM_MS 5000UL              // se dopo il 112 non arriva 51/53,
+                                            // il 112 era rumore sul bus
+
+// ---------------------------------------------------------------------------
+// SAM: modalita' "parla" (build espsamauto.prg scelta nel menu del bootstrap)
+// ---------------------------------------------------------------------------
+#define CMD_SAM_BUILD 113     // bootstrap: build SAM
+#define CMD_SAM_STOP  114     // interrompe la frase
+#define CMD_SAM_LINE  115     // riga di testo dal C64 -> pronuncia
+#define CMD_SAM_NEWS  116     // pronuncia le news correnti
+#define CMD_SAM_FONTE 117     // fonte delle news per SAM (1 byte: indice)
+#define CMD_SAM_TESTO 118     // testo delle news -> C64 ($A000), poi 116
+#define CMD_SAM_PLAYER 119    // carica samplayer.prg dalla SD dell'ESP32
+
+// Lunghezza massima del testo SAM mostrato/pronunciato. Il player C64 ora
+// scorre il testo completo (karaoke con scroll): $A000-$B7FF = 6144 byte di
+// testo, tabella pezzi a $B800. Con 4000 caratteri si resta sotto i 255 pezzi
+// (4000/16 = 250) e sotto i 65536 byte dei contatori a 16 bit.
+#define SAM_MAX_TEXT 4000
+
+static bool samVariant = false;
+static volatile bool samStop = false;
+static uint8_t *samBuf = NULL;         // campioni 11025 Hz, 4 bit
+static String samNewsText;             // testo delle news gia' scaricato
 volatile bool io2 = false;
 unsigned long outbuffersize = 0;
 
@@ -226,7 +289,10 @@ void IRAM_ATTR isr_io1() {
 // *************************************************
 // Interrupt routine for IO2
 // *************************************************
+volatile uint32_t io2cnt = 0;          // letture di $DF00 (diagnostica)
+
 void IRAM_ATTR isr_io2() {
+  io2cnt++;
   // This signal goes LOW when the commodore reads from (or write to) the IO2 address space
   // In this case the commodore only uses the IO2 address space to read from, so ESP32 can send data.
   io2 = true;
@@ -241,18 +307,70 @@ void IRAM_ATTR isr_reset() {
 
 // ******************************************************************************
 // send a single byte to the C64
+// Se il C64 non risponde entro 50 ms, il trasferimento viene abbandonato
+// (sendFailed): prima si restava in attesa per sempre e l'ESP32 si bloccava.
 // ******************************************************************************
+static bool sendFailed = false;
+
+// Alza EXROM (CLED LOW): la EPROM a $8000-$9FFF sparisce, resta RAM.
+// reason: testo per il log seriale. Sta qui, dopo i #define dei pin (CLED).
+static void exromRelease(const char *reason) {
+  if (!exromMapped) return;
+  digitalWrite(CLED, LOW);
+  exromMapped = false;
+  Serial.printf("EXROM alto (%s): $8000-$9FFF torna RAM\n", reason);
+}
+
+// Ri-mappa la EPROM (CLED HIGH -> EXROM basso). Serve se il 112 era un falso
+// positivo: con la C64 spenta il bus flottante genera comandi a caso.
+static void exromRemap(const char *reason) {
+  if (exromMapped) return;
+  digitalWrite(CLED, HIGH);
+  exromMapped = true;
+  Serial.printf("EXROM basso (%s): EPROM di nuovo mappata a $8000\n", reason);
+}
+
+// Pulsante di reset della cartuccia (net iRST -> GPIO15).
+// Il pulsante NON e' cablato al /RESET della C64: deve essere il firmware a
+// resettare tutto. Si tiene la C64 in reset e si riavvia l'ESP32: al riavvio
+// setup() rimappa la EPROM (CLED HIGH), ripulsa il reset della C64 (GPIO21)
+// e la cartuccia riparte dal menu del bootstrap, esattamente come con il
+// pulsante RESET del modulo ESP32.
+// Lettura in POLLING con debounce: l'interrupt su GPIO15 (pin di strapping
+// MTDO, sensibile ai disturbi durante l'audio a 11 kHz) causava riavvii
+// dell'ESP32 a caso, per questo era stato disattivato.
+static void pollResetButton() {
+  static bool holdSeen = false;      // gia' visto un fronte di pressione
+  static uint32_t holdAt = 0;
+
+  bool low = (digitalRead(resetSwitch) == LOW);
+  if (!low) { holdSeen = false; return; }
+  if (!holdSeen) { holdSeen = true; holdAt = millis(); return; }
+  if (millis() - holdAt < 40) return;   // debounce: 40 ms di pressione
+
+  Serial.println("RESET: pulsante della cartuccia premuto");
+  Serial.flush();
+  digitalWrite(oC64RST, !invert_Reset);  // tengo la C64 in reset
+  delay(50);                             // finche' l'ESP32 si riavvia
+  ESP.restart();
+}
+
 void sendByte(byte b) {
+  if (sendFailed) return;
   outByte(b);
   io2 = false;
   triggerNMI();
-  // wait for io2 interupt
-  while (io2 == false) {
+  uint32_t t0 = micros();
+  while (io2 == false) {                 // wait for io2 interrupt
+    if ((micros() - t0) > 50000) {
+      sendFailed = true;
+      Serial.println("tx: timeout dal C64, blocco interrotto");
+      return;
+    }
     delayMicroseconds(10); //default 2
   }
   io2 = false;
 }
-
 // ******************************************************************************
 // void to set a byte in the 74ls244 buffer
 // ******************************************************************************
@@ -622,6 +740,30 @@ byte Ascii_to_screenCode(char ascii) {
   return 32;  // spazio
 }
 
+// Come Ascii_to_screenCode, ma preserva il MAIUSCOLO (screen code 65..90).
+// Serve per la fonte e per la prima lettera dopo il punto nelle news.
+byte Ascii_to_screenCode_case(char ascii) {
+  if (ascii >= 'A' && ascii <= 'Z') return (byte)(ascii - 'A' + 65);
+  return Ascii_to_screenCode(ascii);
+}
+
+// Mette in maiuscolo la prima lettera e quella dopo ogni punto.
+static String capitalizeSentences(const String &in) {
+  String out = in;
+  bool cap = true;
+  for (unsigned int i = 0; i < out.length(); i++) {
+    char c = out[i];
+    if (c >= 'a' && c <= 'z') {
+      if (cap) { out[i] = (char)(c - 'a' + 'A'); cap = false; }
+    } else if (c == '.') {
+      cap = true;
+    } else if (c != ' ' && c != '\'') {
+      cap = false;
+    }
+  }
+  return out;
+}
+
 // ******************************************************************************
 // UTF-8 -> ASCII compatibile con il charset 2x2 dello scroller
 // ******************************************************************************
@@ -661,13 +803,14 @@ String utf8ToScrollerAscii(const String &in) {
 
     char m = '?';
 
-    if ((cp >= 0xC0 && cp <= 0xC5) || (cp >= 0xE0 && cp <= 0xE5)) m = 'a';
+    // vocali accentate -> lettera + apostrofo (a' e' i' o' u')
+    if ((cp >= 0xC0 && cp <= 0xC5) || (cp >= 0xE0 && cp <= 0xE5)) { out += "a'"; continue; }
     else if (cp == 0xC7 || cp == 0xE7) m = 'c';
-    else if ((cp >= 0xC8 && cp <= 0xCB) || (cp >= 0xE8 && cp <= 0xEB)) m = 'e';
-    else if ((cp >= 0xCC && cp <= 0xCF) || (cp >= 0xEC && cp <= 0xEF)) m = 'i';
+    else if ((cp >= 0xC8 && cp <= 0xCB) || (cp >= 0xE8 && cp <= 0xEB)) { out += "e'"; continue; }
+    else if ((cp >= 0xCC && cp <= 0xCF) || (cp >= 0xEC && cp <= 0xEF)) { out += "i'"; continue; }
     else if (cp == 0xD1 || cp == 0xF1) m = 'n';
-    else if ((cp >= 0xD2 && cp <= 0xD6) || (cp >= 0xF2 && cp <= 0xF6)) m = 'o';
-    else if ((cp >= 0xD9 && cp <= 0xDC) || (cp >= 0xF9 && cp <= 0xFC)) m = 'u';
+    else if ((cp >= 0xD2 && cp <= 0xD6) || (cp >= 0xF2 && cp <= 0xF6)) { out += "o'"; continue; }
+    else if ((cp >= 0xD9 && cp <= 0xDC) || (cp >= 0xF9 && cp <= 0xFC)) { out += "u'"; continue; }
     else if (cp == 0xDF) m = 's';
     else if (cp == 0x2018 || cp == 0x2019 || cp == 0x02BC) m = '\'';
     else if (cp == 0x201C || cp == 0x201D || cp == 0x00AB || cp == 0x00BB) m = '"';
@@ -683,6 +826,126 @@ String utf8ToScrollerAscii(const String &in) {
   return out;
 }
 
+// --------------------------------------------------------------------------
+// Numeri -> parole (per la lettura SAM: i fonemi ignorano le cifre).
+// --------------------------------------------------------------------------
+static String itNumber(int n) {
+  if (n == 0) return "zero";
+  static const char *u[] = {"", "uno", "due", "tre", "quattro", "cinque", "sei", "sette", "otto", "nove"};
+  static const char *teens[] = {"dieci", "undici", "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto", "diciannove"};
+  static const char *tens[] = {"", "dieci", "venti", "trenta", "quaranta", "cinquanta", "sessanta", "settanta", "ottanta", "novanta"};
+  String r;
+  if (n >= 1000000) {
+    int m = n / 1000000;
+    r += (m == 1) ? "un milione" : itNumber(m) + " milioni";
+    n %= 1000000;
+    if (n) r += ' ';
+  }
+  if (n >= 1000) {
+    int m = n / 1000;
+    r += (m == 1) ? "mille" : itNumber(m) + "mila";
+    n %= 1000;
+    if (n) r += ' ';
+  }
+  if (n >= 100) {
+    int c = n / 100;
+    r += (c == 1) ? "cento" : String(u[c]) + "cento";
+    n %= 100;
+    if (n) r += ' ';
+  }
+  if (n >= 20) {
+    int t = n / 10, o = n % 10;
+    if (o == 1 || o == 8) {          // ventuno/ventotto, trentuno/trentotto...
+      String ten(tens[t]);
+      ten.remove(ten.length() - 1);
+      r += ten + u[o];
+    } else {
+      r += tens[t];
+      if (o) r += u[o];
+    }
+  } else if (n >= 10) {
+    r += teens[n - 10];
+  } else if (n > 0) {
+    r += u[n];
+  }
+  return r;
+}
+
+static String enNumber(int n) {
+  if (n == 0) return "zero";
+  static const char *u[] = {"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"};
+  static const char *teens[] = {"ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
+  static const char *tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+  String r;
+  if (n >= 1000000) { r += String(u[n / 1000000]) + " million"; n %= 1000000; if (n) r += ' '; }
+  if (n >= 1000)    { r += String(u[n / 1000]) + " thousand"; n %= 1000; if (n) r += ' '; }
+  if (n >= 100)     { r += String(u[n / 100]) + " hundred"; n %= 100; if (n) r += ' '; }
+  if (n >= 20)      { r += tens[n / 10]; if (n % 10) { r += ' '; r += u[n % 10]; } }
+  else if (n >= 10) r += teens[n - 10];
+  else if (n > 0)   r += u[n];
+  return r;
+}
+
+// Sostituisce le sequenze di cifre con le parole (fino a 999999).
+static String convertNumbers(const String &in, bool italian) {
+  String out;
+  out.reserve(in.length() + 96);
+  for (unsigned int i = 0; i < in.length(); ) {
+    char c = in[i];
+    if (c >= '0' && c <= '9') {
+      long n = 0;
+      int digits = 0;
+      while (i < in.length() && in[i] >= '0' && in[i] <= '9' && digits < 6) {
+        n = n * 10 + (in[i] - '0');
+        i++;
+        digits++;
+      }
+      while (i < in.length() && in[i] >= '0' && in[i] <= '9') i++;  // oltre 6 cifre: salta
+      out += italian ? itNumber((int)n) : enNumber((int)n);
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+// Simboli -> parole (per SAM, che ignora i simboli non-lettera).
+// L'apostrofo resta nel testo: l'elisione italiana la gestisce it2sam.c
+// (l'economia si pronuncia "leconomia"), le contrazioni inglesi il Reciter.
+static String convertSymbols(const String &in, bool italian) {
+  String out;
+  out.reserve(in.length() + 64);
+  for (unsigned int i = 0; i < in.length(); i++) {
+    char c = in[i];
+    switch (c) {
+      case '%':
+        out += italian ? " percento " : " percent ";
+        break;
+      case '$':
+        out += italian ? " dollari " : " dollars ";
+        break;
+      case '+':
+        out += italian ? " piu' " : " plus ";
+        break;
+      case '&':
+        out += italian ? " e " : " and ";
+        break;
+      case '-': {
+        bool before = (i == 0) || in[i - 1] == ' ';
+        bool after  = (i + 1 >= in.length()) || in[i + 1] == ' ';
+        if (before || after) out += italian ? " meno " : " minus ";
+        else out += ' ';               // trattino tra parole -> spazio
+        break;
+      }
+      default:
+        out += c;
+        break;
+    }
+  }
+  return out;
+}
+
 
 // ******************************************************************************
 // translate ascii to PETascii
@@ -694,19 +957,20 @@ struct NewsSource {
   const char *name;
   const char *url;
   bool useNewsApi;
+  bool italian;                        // true = fonemi italiani (it2sam)
 };
 
 static const NewsSource NEWS_SOURCES[] = {
-  { "ANSA",        "https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", false },
-  { "Rai News",    "https://www.rainews.it/rss/tutti",                        false },
-  { "Repubblica",  "https://www.repubblica.it/rss/homepage/rss2.0.xml",       false },
-  { "Il Sole 24 Ore", "https://www.ilsole24ore.com/rss/italia.xml",           false },
-  { "Google News", "https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it",      false },
-  { "NewsAPI",     "",                                                        true  },
-  { "BBC World",   "https://feeds.bbci.co.uk/news/world/rss.xml",            false },
-  { "Al Jazeera",  "https://www.aljazeera.com/xml/rss/all.xml",              false },
-  { "SCMP",        "https://www.scmp.com/rss/91/feed",                       false },
-  { "CGTN World",  "https://www.cgtn.com/subscribe/rss/section/world.xml",   false },
+  { "ANSA",        "https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", false, true  },
+  { "Rai News",    "https://www.rainews.it/rss/tutti",                        false, true  },
+  { "Repubblica",  "https://www.repubblica.it/rss/homepage/rss2.0.xml",       false, true  },
+  { "Il Sole 24 Ore", "https://www.ilsole24ore.com/rss/italia.xml",           false, true  },
+  { "Google News", "https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it",      false, true  },
+  { "NewsAPI",     "",                                                        true,  true  },
+  { "BBC World",   "https://feeds.bbci.co.uk/news/world/rss.xml",            false, false },
+  { "Al Jazeera",  "https://www.aljazeera.com/xml/rss/all.xml",              false, false },
+  { "SCMP",        "https://www.scmp.com/rss/91/feed",                       false, false },
+  { "CGTN World",  "https://www.cgtn.com/subscribe/rss/section/world.xml",   false, false },
 };
 
 const int NEWS_SOURCE_COUNT = sizeof(NEWS_SOURCES) / sizeof(NEWS_SOURCES[0]);
@@ -880,7 +1144,7 @@ private:
         String t = decodeHtmlEntities(title, titleLen);
         t.trim();
         if (t.length() > 0) {
-          if (out.length() > 0) out += ' ';
+          if (out.length() > 0) out += ". ";   // punto tra una notizia e l'altra
           out += t;
           titles++;
         }
@@ -964,7 +1228,7 @@ static String fetchNewsApiHeadlines() {
   headlines.reserve(2048);
   for (size_t i = 0; i < articles.size(); i++) {
     const char *t = articles[i]["title"] | "";
-    if (headlines.length() > 0) headlines += ' ';
+    if (headlines.length() > 0) headlines += ". ";   // punto tra una notizia e l'altra
     headlines += t;
     if (headlines.length() >= 2000) break;
   }
@@ -1712,12 +1976,15 @@ void setup() {
   // define interrupts
   attachInterrupt(C64IO1, isr_io1, RISING);          // interrupt for io1, C64 writes data to io1 address space
   attachInterrupt(C64IO2, isr_io2, FALLING);         // interrupt for io2, c64 reads
-  attachInterrupt(resetSwitch, isr_reset, FALLING);  // interrupt for reset button
+  // NOTA: il pulsante di reset (GPIO15, net iRST) NON usa un interrupt: si
+  // legge in polling con debounce (pollResetButton nel loop). L'interrupt su
+  // GPIO15 (pin di strapping MTDO) causava riavvii dell'ESP32 a caso durante
+  // l'audio, per questo era stato disattivato.
 
   // define outputs
   pinMode(CLED, OUTPUT);
-  digitalWrite(CLED, HIGH);
-  //digitalWrite(CLED, LOW);
+  digitalWrite(CLED, HIGH);        // EXROM basso: EPROM mappata a $8000
+  exromMapped = true;
   pinMode(oC64D0, OUTPUT);
   pinMode(oC64D1, OUTPUT);
   pinMode(oC64D2, OUTPUT);
@@ -1742,7 +2009,11 @@ void setup() {
   delay(250);
   digitalWrite(oC64RST, invert_Reset);
 
-  Serial.begin(115200);
+  // timeout di trasmissione 0: i log non devono MAI bloccare il loop. Se
+  // nessuno legge la seriale il buffer si riempie e Serial.printf aspetterebbe
+  // (con D7 basso, e il C64 andrebbe in timeout). Con 0 i byte in eccesso si
+  // perdono e basta.
+  Serial.begin(115200, SERIAL_8N1, -1, -1, false, 0);
   delay(500);
 
   // Il WiFi serve solo per meteo/ora e NEWS. Se non e' configurato o non
@@ -1783,10 +2054,18 @@ void setup() {
   SD.remove("/directory.txt");          // pulizia del vecchio file temporaneo
   currentDir = parentDir = "/";
   buildDirectoryList();
-  // Aspetta che il C64 abbia copiato il bootstrap dalla EPROM prima di
-  // alzare EXROM. Il loader puo' anche inviare prima il comando 112.
-  delay(1500);
-  digitalWrite(CLED, LOW);
+  // NON alzare EXROM qui: la EPROM deve restare mappata finche' il loader
+  // del bootstrap non ha copiato se' stesso a $C000 e non manda il comando
+  // 112 (case 112 -> exromRelease). Il vecchio delay(1500)+CLED LOW era una
+  // scommessa sul fatto che la C64 avesse gia' finito il coldstart.
+  // Nessun timeout: se l'ESP32 e' alimentato via USB e la C64 viene accesa
+  // dopo, la EPROM deve essere ancora mappata per far partire la cartuccia.
+  Serial.println("EXROM basso: EPROM mappata, attendo il comando 112");
+#if ENABLE_SAM
+  Serial.println("SAM: voce inclusa (ENABLE_SAM=1)");
+#else
+  Serial.println("SAM: build SENZA voce (ENABLE_SAM=0, vedi SAM_SOURCES.md)");
+#endif
   Serial.println("");
   Serial.println("done!");
 
@@ -1888,16 +2167,30 @@ static void buildMenuScreen() {
   menuCenter(3, "BY M.ANGELINI", 15);
   menuLeft(5, 8, "MAIN MENU", 3);
 
-  static const char *items[] = {
-    "SD CARD", "SUPERMON", "HELP", "CLOCK / WEATHER", "BASIC",
-    "KOALA", "NEWS", "KOALA SLIDESHOW", "PETSCII SLIDESHOW"
-  };
-  for (int i = 0; i < 9; i++) menuLeft(6 + i, 8, items[i], 1);
+  if (samVariant) {
+    // build SAM (espsamauto.prg): niente koala/news a schermo, il testo lo
+    // legge SAM. Deve combaciare con menu_max del build C64 -DSAM=1.
+    static const char *sitems[] = {
+      "SD CARD", "HELP", "BASIC", "SAM TALK", "SAM NEWS"
+    };
+    for (int i = 0; i < 5; i++) menuLeft(6 + i, 8, sitems[i], 1);
+    // righe di aiuto centrate (prima a colonna 8: troppo a destra)
+    menuCenter(16, "UP/DOWN SELECT - RETURN ENTER", 15);
+    menuCenter(19, "SAM TALK: TYPE AND PRESS RETURN", 3);
+    menuCenter(20, "SAM NEWS: PICK THE SOURCE", 3);
+    menuCenter(21, "TEXT ON SCREEN, RUN/STOP STOPS", 3);
+  } else {
+    static const char *items[] = {
+      "SD CARD", "SUPERMON", "HELP", "CLOCK / WEATHER", "BASIC",
+      "KOALA", "NEWS", "KOALA SLIDESHOW", "PETSCII SLIDESHOW"
+    };
+    for (int i = 0; i < 9; i++) menuLeft(6 + i, 8, items[i], 1);
 
-  menuLeft(16, 8, "UP/DOWN SELECT - RETURN ENTER", 15);
-  menuLeft(19, 8, "LOAD PRG/GAMES, SID, KOALA", 3);
-  menuLeft(20, 8, "NEWS + WEATHER FROM INTERNET", 3);
-  menuLeft(21, 8, "PETSCII ART FROM SD CARD", 3);
+    menuLeft(16, 8, "UP/DOWN SELECT - RETURN ENTER", 15);
+    menuLeft(19, 8, "LOAD PRG/GAMES, SID, KOALA", 3);
+    menuLeft(20, 8, "NEWS + WEATHER FROM INTERNET", 3);
+    menuLeft(21, 8, "PETSCII ART FROM SD CARD", 3);
+  }
 }
 
 static void buildFrameScreen() {
@@ -2037,6 +2330,34 @@ static const char helpText[] =
   " UP/DOWN SELECT - RETURN ENTER\r"
   " PRESS A KEY TO RETURN TO MENU\r";
 
+// Stessa pagina per la build SAM (espsamauto.prg): il menu ha 5 voci
+// (SD CARD, HELP, BASIC, SAM TALK, SAM NEWS) e non ci sono SUPERMON,
+// CLOCK/WEATHER, KOALA, NEWS, SLIDESHOW.
+static const char helpTextSam[] =
+  "\x93\x9e"
+  "+--------------------------------------+\r"
+  "      C64 ESP32 CARTRIDGE - HELP\r"
+  "+--------------------------------------+\r"
+  "\x05"
+  " SD CARD   LOAD PRG/GAMES, SID, KOALA\r"
+  "           F1/F7 PAGE, RETURN OPEN\r"
+  "           Q = QUIT DIRECTORY\r"
+  " HELP      THIS PAGE\r"
+  " BASIC     RETURN TO BASIC\r"
+  " SAM TALK  TYPE A LINE, PRESS RETURN\r"
+  "           SAM READS IT, RUN/STOP MENU\r"
+  " SAM NEWS  PICK A SOURCE FROM 10\r"
+  "           TEXT ON SCREEN, SAM READS IT\r"
+  "           A KEY STOPS THE SPEECH\r"
+  "\x9e"
+  " SID       LOAD A SID FROM SD FIRST\r"
+  "           THEN NEWS/SLIDES CAN USE IT\r"
+  " SD: /PETSCII-ART (.D64)\r"
+  "     /PETSCII-SEQ (.SEQ)\r"
+  "\x9f"
+  " UP/DOWN SELECT - RETURN ENTER\r"
+  " PRESS A KEY TO RETURN TO MENU\r";
+
 void buildKoalaList() {
   // Se la directory e' gia' stata scandita da buildDirectoryList(), la lista
   // e' pronta: evitiamo una seconda lettura della SD (causava 10-20 s di
@@ -2103,16 +2424,377 @@ void sendZeroBlock() {
   sendByte(0);
 }
 
+// Manda al C64 un PRG della SD (blocco: 2 byte lunghezza, 2 di indirizzo, dati).
+// Usa il percorso cosi' com'e': nessun cambio di directory.
+static void sendPrgFile(const String &path) {
+  File f = SD.open(path);
+  if (!f) {
+    Serial.printf("PRG: '%s' non trovato, heap %u\n", path.c_str(), (unsigned)ESP.getFreeHeap());
+    sendZeroBlock();
+    return;
+  }
+  uint32_t fileSize = f.size();
+  if (fileSize < 3) {
+    Serial.printf("PRG: '%s' troppo corto (%lu byte)\n", path.c_str(), (unsigned long)fileSize);
+    f.close();
+    sendZeroBlock();
+    return;
+  }
+  int lo = f.read();
+  int hi = f.read();
+  uint16_t loadAddr = (uint16_t)lo | ((uint16_t)hi << 8);
+  uint32_t dataLen = fileSize - 2;
+  prgEntry = loadAddr;
+  if (loadAddr == 0x0801) {
+    uint16_t sys = parseBasicSys(f, dataLen);
+    prgEntry = (sys != 0) ? sys : 0xE37B;
+  }
+  sendByte((byte)(dataLen));
+  sendByte((byte)(dataLen >> 8));
+  sendByte((byte)loadAddr);
+  sendByte((byte)(loadAddr >> 8));
+  f.seek(2);
+  for (uint32_t x = 0; x < dataLen; x++) sendByte(f.read());
+  f.close();
+  Serial.printf("PRG: %s load $%04X, entry $%04X, %lu byte\n",
+                path.c_str(), loadAddr, prgEntry, (unsigned long)dataLen);
+}
+
+#if ENABLE_SAM
+// ******************************************************************************
+// SAM: trigger NMI breve (il triggerNMI() normale aspetta 150 us: troppo per
+// un campione ogni 91 us)
+// ******************************************************************************
+void triggerNMIfast() {
+  digitalWrite(oC64NMI, HIGH);
+  delayMicroseconds(8);
+  digitalWrite(oC64NMI, LOW);
+}
+
+static bool samSendSample(uint8_t nibble) {
+  outByte((byte)(nibble << 4));          // il C64 usa il nibble alto ($D418)
+  io2 = false;
+  triggerNMIfast();
+  uint32_t t0 = micros();
+  while (!io2) {
+    if ((micros() - t0) > 2000) return false;
+    delayMicroseconds(1);
+  }
+  io2 = false;
+  return true;
+}
+
+// Riproduce i campioni a 11025 Hz. false = stop dal C64 o timeout.
+static bool samPlay(const uint8_t *s, size_t n) {
+  uint32_t t0 = micros();
+  uint16_t failed = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (samStop) return false;
+    if (dataFromC64) {                    // comando dal C64 durante la frase
+      if (ch == CMD_SAM_STOP) {
+        dataFromC64 = false;
+        samStop = true;
+        return false;
+      }
+      // un altro comando (es. 118 o 51): ferma la voce e lascialo gestire
+      // al loop; dataFromC64 resta true, cosi' il comando non si perde
+      Serial.printf("SAM: comando %d durante la frase, stop\n", (int)ch);
+      samStop = true;
+      return false;
+    }
+    uint32_t due = t0 + (uint32_t)(((uint64_t)i * 1000000ULL) / 11025ULL);
+    int32_t wait = (int32_t)(due - micros());
+    if (wait > 0) delayMicroseconds(wait);
+    if (!samSendSample(s[i])) {
+      if (++failed > 50) { Serial.println("SAM: timeout dal C64, stop"); return false; }
+    } else {
+      failed = 0;
+    }
+  }
+  return true;
+}
+
+static bool samAlloc() {
+  if (samBuf) return true;
+  samBuf = (uint8_t *)malloc(SAM_BUF_SECONDS * 11025 + 64);
+  if (!samBuf) {
+    Serial.printf("SAM: malloc fallito (heap %u, max %u)\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+    return false;
+  }
+  return true;
+}
+
+static void samRelease() {
+  if (samBuf) { free(samBuf); samBuf = NULL; }
+}
+
+// Pezzi della frase per il karaoke: offset nel testo PRONUNCIATO + campioni
+// a 11025 Hz. La divisione e' identica a quella di samSpeak, quindi i conteggi
+// dei campioni combaciano con cio' che verra' poi riprodotto.
+struct SamPiece {
+  uint16_t dispOff;    // offset del pezzo nel testo da pronunciare
+  uint16_t samples;    // campioni a 11025 Hz
+};
+static SamPiece samPieces[256];
+static int samPieceCount = 0;
+
+static int samComputePieces(const char *text, int lang) {
+  if (!text || !*text) return 0;
+  if (!samAlloc()) return 0;
+  size_t len = strlen(text), pos = 0;
+  int count = 0;
+  while (pos < len && count < (int)(sizeof(samPieces) / sizeof(samPieces[0]))) {
+    while (pos < len && text[pos] == ' ') pos++;
+    if (pos >= len) break;
+    size_t end = pos + SAM_MAX_CHARS;
+    if (end >= len) {
+      end = len;
+    } else {
+      size_t cut = end;
+      while (cut > pos && text[cut] != ' ' && text[cut] != ',' &&
+             text[cut] != '.' && text[cut] != '?' && text[cut] != '!') cut--;
+      if (cut > pos) end = cut + 1;
+    }
+    char piece[SAM_MAX_CHARS + 2];
+    size_t pl = end - pos;
+    if (pl > SAM_MAX_CHARS) pl = SAM_MAX_CHARS;
+    memcpy(piece, text + pos, pl);
+    piece[pl] = 0;
+    size_t n = sam_say_lang(piece, samBuf, SAM_BUF_SECONDS * 11025 + 32, lang);
+    samPieces[count].dispOff = (uint16_t)pos;
+    samPieces[count].samples = (uint16_t)(n > 65535 ? 65535 : n);
+    count++;
+    pos = end;
+  }
+  samRelease();
+  return count;
+}
+
+// Testo -> pezzi da SAM_MAX_CHARS (limite del buffer SAM) -> campioni -> C64
+static void samSpeak(const char *text, int lang) {
+  if (!text || !*text) return;
+  if (!samAlloc()) return;
+
+  Serial.printf("SAM: heap %u, max %u\n",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+  size_t len = strlen(text), pos = 0;
+  while (pos < len && !samStop) {
+    while (pos < len && text[pos] == ' ') pos++;
+    if (pos >= len) break;
+    size_t end = pos + SAM_MAX_CHARS;
+    if (end >= len) {
+      end = len;
+    } else {
+      size_t cut = end;
+      while (cut > pos && text[cut] != ' ' && text[cut] != ',' &&
+             text[cut] != '.' && text[cut] != '?' && text[cut] != '!') cut--;
+      if (cut > pos) end = cut + 1;
+    }
+    char piece[SAM_MAX_CHARS + 2];
+    size_t pl = end - pos;
+    if (pl > SAM_MAX_CHARS) pl = SAM_MAX_CHARS;
+    memcpy(piece, text + pos, pl);
+    piece[pl] = 0;
+    pos = end;
+
+    size_t n = sam_say_lang(piece, samBuf, SAM_BUF_SECONDS * 11025 + 32, lang);
+    Serial.printf("SAM: '%s' -> %u campioni (%.2f s)%s\n", piece, (unsigned)n,
+                  n / 11025.0, sam_truncated ? " TRONCATO" : "");
+    if (n == 0) continue;
+    if (!samPlay(samBuf, n)) break;
+    delay(40);
+  }
+  // Libera il buffer SAM (44 KB): altrimenti resta allocato e il fetch TLS
+  // delle news del menu normale parte con 44 KB in meno -> HTTP -1 ->
+  // "no news available". Il prossimo samSpeak lo rialloca.
+  samRelease();
+  Serial.println("SAM: fine frase");
+}
+
+// Riga di testo dal C64 (screen code -> ASCII), terminatore 128
+static int samReadByte();
+
+static void samReceiveLine() {
+  int i = 0;
+  while (i < 63) {
+    int b = samReadByte();
+    if (b < 0 || b == 128) break;
+    inbuffer[i] = screenCode_to_Ascii((byte)b);
+    i++;
+  }
+  inbuffer[i] = 0;
+  // prefisso di lingua: "\en" o "/en" = inglese (Reciter), "\it" o "/it"
+  // = italiano. Sulla tastiera del C64 il backslash non c'e', quindi /en.
+  const char *line = inbuffer;
+  int lang = SAM_LANG_IT;
+  if ((line[0] == '\\' || line[0] == '/') &&
+      (line[1] == 'e' || line[1] == 'E') &&
+      (line[2] == 'n' || line[2] == 'N') && line[3] == ' ') {
+    lang = SAM_LANG_EN;
+    line += 4;
+  } else if ((line[0] == '\\' || line[0] == '/') &&
+             (line[1] == 'i' || line[1] == 'I') &&
+             (line[2] == 't' || line[2] == 'T') && line[3] == ' ') {
+    line += 4;
+  }
+  String lineStr = convertSymbols(String(line), lang == SAM_LANG_IT);
+  Serial.printf("SAM: riga '%s' (%s)\n", lineStr.c_str(), lang == SAM_LANG_EN ? "en" : "it");
+  samStop = false;
+  samSpeak(lineStr.c_str(), lang);
+}
+
+// Scarica le news della fonte corrente e le tiene in samNewsText (usato da
+// 116 per pronunciarle e da 118 per mandarle al C64).
+static void samFetchNews() {
+  samNewsText = "";
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("SAM: WiFi non connesso");
+    samNewsText = "wifi non connesso";
+    return;
+  }
+  // il download (TLS) e il buffer SAM non devono convivere: libera prima
+  samRelease();
+  Serial.printf("SAM: news, heap prima %u, max %u\n",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+  Serial.flush(); delay(100);   // se il fetch va in panic il log non si perde
+  const NewsSource &src = NEWS_SOURCES[newsSourceIndex];
+  String headlines = src.useNewsApi ? fetchNewsApiHeadlines()
+                                    : fetchRssHeadlines(src.url, 2000, 15);
+  String t = utf8ToScrollerAscii(headlines);
+  if (t.length() == 0) t = "no news available";
+  // numeri -> parole (i fonemi SAM ignorano le cifre)
+  t = convertNumbers(t, src.italian);
+  // simboli -> parole (% $ + - &) e apostrofo di elisione rimosso
+  t = convertSymbols(t, src.italian);
+  // Il player ora scorre (karaoke con scroll): si manda il testo completo.
+  // Tetto prudente = SAM_MAX_TEXT; taglia all'ultimo spazio (niente parole a meta').
+  if (t.length() > SAM_MAX_TEXT) {
+    t.remove(SAM_MAX_TEXT);
+    int sp = t.lastIndexOf(' ');
+    if (sp > 0) t.remove(sp);
+  }
+  Serial.printf("SAM: news '%s' %u caratteri, heap dopo %u, max %u\n",
+                src.name, (unsigned)t.length(),
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+  samNewsText = t;
+}
+
+// News correnti lette da SAM (l'ESP32 le scarica; il testo va al C64 con 118)
+static void samSpeakNews() {
+  if (samNewsText.length() == 0) samFetchNews();
+  if (samNewsText.length() == 0) return;
+  // fonte italiana -> fonemi italiani, fonte estera -> Reciter inglese
+  int lang = NEWS_SOURCES[newsSourceIndex].italian ? SAM_LANG_IT : SAM_LANG_EN;
+  Serial.printf("SAM: leggo le news in %s\n", lang == SAM_LANG_EN ? "inglese" : "italiano");
+  samSpeak(samNewsText.c_str(), lang);
+}
+
+// Manda al C64 il testo delle news a $A000 (blocco: 2 byte lunghezza, 2 di
+// indirizzo, poi il testo in screen code) e, subito dopo, una tabella dei
+// pezzi a $B800 (per il karaoke: offset nel testo mostrato + campioni).
+static void samSendNewsText() {
+  if (samNewsText.length() == 0) samFetchNews();
+  const NewsSource &src = NEWS_SOURCES[newsSourceIndex];
+  int lang = src.italian ? SAM_LANG_IT : SAM_LANG_EN;
+  // nome della fonte in MAIUSCOLO + testo con le iniziali dopo il punto
+  String name = String(src.name);
+  name.toUpperCase();
+  String display = name + ": " + capitalizeSentences(samNewsText);
+  unsigned int len = display.length();
+  if (len > SAM_MAX_TEXT + 48) {         // niente parole a meta' (48 = margine nome)
+    len = SAM_MAX_TEXT + 48;
+    int sp = display.lastIndexOf(' ', len);
+    if (sp > 0) len = sp;
+  }
+
+  // pezzi del testo PRONUNCIATO + campioni (il prefisso non si pronuncia)
+  unsigned int prefix = strlen(src.name) + 2;    // "nome: "
+  int np = samComputePieces(samNewsText.c_str(), lang);
+  if (np > 255) np = 255;    // num_pieces sul C64 e' un byte
+
+  Serial.printf("SAM: testo news al C64, %u byte, %d pezzi (%s)\n",
+                len, np, src.name);
+
+  // 1) testo mostrato a $A000
+  sendByte((byte)len);
+  sendByte((byte)(len >> 8));
+  sendByte(0x00);
+  sendByte(0xa0);
+  for (unsigned int i = 0; i < len; i++) {
+    sendByte(Ascii_to_screenCode_case(display[i]));
+  }
+  // pausa: il C64 deve ri-armare rxstate per il secondo blocco
+  delay(20);
+
+  // 2) tabella pezzi a $B800: per ogni pezzo (offset mostrato, campioni)
+  unsigned int tableLen = np * 4;
+  sendByte((byte)tableLen);
+  sendByte((byte)(tableLen >> 8));
+  sendByte(0x00);
+  sendByte(0xb8);
+  for (int k = 0; k < np; k++) {
+    uint16_t off = (uint16_t)(prefix + samPieces[k].dispOff);
+    sendByte((byte)off);
+    sendByte((byte)(off >> 8));
+    sendByte((byte)samPieces[k].samples);
+    sendByte((byte)(samPieces[k].samples >> 8));
+  }
+  if (sendFailed) Serial.println("SAM: testo news non consegnato al C64");
+}
+
+#else   // ENABLE_SAM == 0
+// Build senza SAM (nessun sorgente commerciale): i comandi legati alla voce
+// rispondono con un blocco vuoto e scrivono il motivo nel log, cosi' il C64
+// non resta mai in attesa.
+static void samRelease() {}
+
+static void samNoSam() {
+  Serial.println("SAM: questa build non include SAM (vedi SAM_SOURCES.md)");
+  sendZeroBlock();
+}
+
+static void samReceiveLine() { samNoSam(); }
+static void samSpeakNews()   { samNoSam(); }
+static void samSendNewsText() { samNoSam(); }
+#endif  // ENABLE_SAM
+
+// Legge un byte dal C64 con il flow control (D7 alto = pronto). -1 = timeout.
+static int samReadByte() {
+  gpio_set_level(oC64D7, HIGH);
+  uint32_t t0 = millis();
+  while (!dataFromC64) {
+    if (millis() - t0 > 2000) {
+      gpio_set_level(oC64D7, LOW);
+      Serial.println("SAM: timeout in ricezione dal C64");
+      return -1;
+    }
+    delayMicroseconds(2);
+  }
+  gpio_set_level(oC64D7, LOW);
+  dataFromC64 = false;
+  return (byte)ch;
+}
+
 // ******************************************************************************
 // Main loop
 // ******************************************************************************
 void loop() {
 
-    gpio_set_level(oC64D7, HIGH);
-    
+    // pulsante di reset della cartuccia (GPIO15): reset di ESP32 + C64
+    pollResetButton();
+
     if (dataFromC64){
+    // Cattura SUBITO il comando: ch e' volatile e l'ISR lo riscrive ad ogni
+    // byte, quindi va copiato prima di ogni chiamata lenta (printf). Prima il
+    // "pronto" era outByte(0xFF) all'inizio del giro: riasseriva D7 alto dopo
+    // che l'ISR l'aveva abbassato, e il byte di parametro (es. l'indice fonte
+    // del comando 117) arrivava a comando non ancora consumato -> si perdeva.
+    byte cmd = ch;
     dataFromC64 = false;
-    gpio_set_level(oC64D7, LOW);  // flow control
+    sendFailed = false;                 // nuovo comando: riprova i trasferimenti
+    gpio_set_level(oC64D7, LOW);  // flow control: nessun byte finche' non pronto
+    Serial.printf("CMD %d\n", (int)cmd);
 
     // 49 = read directory from SD
     // 50 = load supermon+
@@ -2121,7 +2803,7 @@ void loop() {
     // 53 = file from ESP32 to c64
     
 
-    switch (ch) { 
+    switch (cmd) { 
       //========================================================
       case 49:{           // 49 = read directory from SD
         buildDirectoryList();
@@ -2144,9 +2826,10 @@ void loop() {
     //========================================================
       case 51:{         // 51 = receive string in inbuffer[i] 
    
+  bootPending = false;   // il boot e' reale: il 112 era buono
   int i = 0;
 
-  while (ch != 128) {
+  while (ch != 128 && i < 200) {
     gpio_set_level(oC64D7, HIGH);  // ready for next byte
     while (dataFromC64 == false) {
       delayMicroseconds(2);  // wait for next byte
@@ -2162,6 +2845,10 @@ void loop() {
 
   IS_SID_FILE = false;
   IS_KOALA_FILE = false;
+  // Il nome del menu dice anche quale variante e': cosi' il comando 113 perso
+  // (scritto subito prima del 51) non lascia il firmware in variante sbagliata.
+  if (strstr(inbuffer, "espsamauto") != NULL) samVariant = true;
+  else if (strstr(inbuffer, "espnewsauto") != NULL) samVariant = false;
   int len = strlen(inbuffer);
   if (len >= 4 && inbuffer[0] != '/') {
     String suffix = String(inbuffer + (len - 4));
@@ -2223,12 +2910,16 @@ void loop() {
 
     //========================================================
       case 63:{          // 63 = pagina HELP (stream PETSCII a $A000)
-        unsigned int helpLen = sizeof(helpText) - 1;
+        // Il testo dipende dalla variante scelta nel menu del bootstrap: la
+        // build SAM ha 5 voci e non ha SUPERMON/CLOCK/KOALA/NEWS/SLIDESHOW.
+        const char *help = samVariant ? helpTextSam : helpText;
+        unsigned int helpLen = (samVariant ? sizeof(helpTextSam)
+                                           : sizeof(helpText)) - 1;
         sendByte((byte)helpLen);
         sendByte((byte)(helpLen >> 8));
         sendByte(0x00);
         sendByte(0xA0);
-        for (unsigned int i = 0; i < helpLen; i++) sendByte(helpText[i]);
+        for (unsigned int i = 0; i < helpLen; i++) sendByte(help[i]);
         break;}
 
     //========================================================
@@ -2254,13 +2945,18 @@ void loop() {
         IS_SID_FILE = false;
         IS_KOALA_FILE = true;
         slideshowIndex++;
-        // fall through: il case 53 invia il file Koala con l'header corretto
+        goto sendFile;                     // il case 53 invia il file Koala
       }
 
     //========================================================
+      case CMD_SAM_PLAYER:{  // 119 = manda il player SAM (percorso assoluto)
+        sendPrgFile("/samplayer.prg");
+        break;}
+
       case 53:{          // 53 = file from ESP32 to c64
       sidFile:
       sendFile:
+      bootPending = false;
       if (strcmp(inbuffer, "/..") == 0) {
         enterParentDirectory();
         buildDirectoryList();
@@ -2488,8 +3184,8 @@ void loop() {
         if (sidList[i].equalsIgnoreCase(currentSidName)) { idx = i; break; }
       }
       if (idx < 0) {
-        idx = (ch == 68) ? 0 : (int)sidList.size() - 1;
-      } else if (ch == 68) {
+        idx = (cmd == 68) ? 0 : (int)sidList.size() - 1;
+      } else if (cmd == 68) {
         idx = (idx + 1) % (int)sidList.size();
       } else {
         idx = (idx + (int)sidList.size() - 1) % (int)sidList.size();
@@ -2549,9 +3245,9 @@ void loop() {
       case 58:
       case 70 ... 85:
       case 90 ... 105: {
-      bool withArt = (ch >= 90);
-      if (withArt) newsSourceIndex = ch - 90;
-      else if (ch >= 70) newsSourceIndex = ch - 70;
+      bool withArt = (cmd >= 90);
+      if (withArt) newsSourceIndex = cmd - 90;
+      else if (cmd >= 70) newsSourceIndex = cmd - 70;
       if (newsSourceIndex < 0 || newsSourceIndex >= NEWS_SOURCE_COUNT) newsSourceIndex = 0;
 
       const NewsSource &src = NEWS_SOURCES[newsSourceIndex];
@@ -2562,6 +3258,12 @@ void loop() {
         sendScrollerMessage("wifi not connected");
         break;
       }
+
+      // Il buffer SAM (44 KB) potrebbe essere ancora allocato: liberarlo
+      // prima del fetch TLS, altrimenti HTTP -1 -> "no news available".
+      samRelease();
+      Serial.printf("NEWS: heap %u, max %u\n",
+                    (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
       String headlines = src.useNewsApi
                            ? fetchNewsApiHeadlines()
@@ -2621,13 +3323,77 @@ void loop() {
         break;}
 
     //========================================================
+      case CMD_SAM_BUILD:{   // 113 = bootstrap: e' la build SAM
+        samVariant = true;
+        Serial.println("SAM: build SAM, comandi 114 stop, 115 riga, 116 news");
+        samRelease();
+        break;}
+
+      case CMD_SAM_STOP:{    // 114 = interrompe la frase in corso
+        samStop = true;
+        Serial.println("SAM: stop richiesto");
+        break;}
+
+      case CMD_SAM_LINE:{    // 115 = riga di testo dal C64 da pronunciare
+        samReceiveLine();
+        break;}
+
+      case CMD_SAM_NEWS:{    // 116 = pronuncia le news correnti
+        samStop = false;
+        samSpeakNews();
+        break;}
+
+      case CMD_SAM_FONTE:{   // 117 = fonte delle news per SAM (1 byte)
+        int idx = samReadByte();
+        if (idx >= 0 && idx < NEWS_SOURCE_COUNT) newsSourceIndex = idx;
+        samNewsText = "";            // la fonte e' cambiata: riscarica
+        Serial.printf("SAM: fonte news %d '%s'\n", newsSourceIndex,
+                      NEWS_SOURCES[newsSourceIndex].name);
+        break;}
+
+      case CMD_SAM_TESTO:{   // 118 = testo delle news -> C64 a $A000
+        samSendNewsText();
+        break;}
+
+    //========================================================
       case 112:{        // 112 = bootstrap: EXROM alto (EPROM $8000 off)
-        digitalWrite(CLED, LOW);
+        samVariant = false;   // nuovo avvio: niente variante SAM "ereditata"
+        exromRelease("comando 112");
+        bootPending = true;   // conferma: il loader manda subito 51 (nome PRG)
+        bootPendingAt = millis();
         sendZeroBlock();
         break;}
 
     //========================================================
     //========================================================
     }
-    }    
+    } else {
+      // 0xFF = "pronto per un comando": unico valore con tutti i bit a 1
+      // (i campioni usano solo il nibble alto, max 0xF0), quindi il C64 puo'
+      // distinguere l'attesa di un comando da una frase in corso. Si scrive
+      // SOLO quando il loop e' fermo, cosi' D7 resta basso durante l'elaborazione
+      // del comando e il parametro arriva solo quando il firmware e' pronto.
+      outByte(0xFF);
+    }
+
+    // Il 112 vero e' seguito quasi subito dal 51 (nome del PRG) e dal 53
+    // (caricamento). Se non arriva niente, il 112 era rumore sul bus flottante
+    // (C64 spenta): rimettiamo la EPROM mappata, altrimenti la cartuccia non
+    // potrebbe piu' partire.
+    if (bootPending && (millis() - bootPendingAt) > BOOT_CONFIRM_MS) {
+      bootPending = false;
+      exromRemap("112 spurio, nessun 51 dopo");
+    }
+
+    // diagnostica: ogni 2 s dice se il C64 sta leggendo $DF00 (in attesa)
+    {
+      static uint32_t hb = 0, hbIo2 = 0;
+      if (millis() - hb > 2000) {
+        hb = millis();
+        uint32_t c = io2cnt;
+        uint32_t d = c - hbIo2;
+        hbIo2 = c;
+        if (d) Serial.printf("hb: %lu letture $DF00\n", (unsigned long)d);
+      }
+    }
 }  // end of main loop

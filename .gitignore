@@ -33,3 +33,26 @@ firmware_backup/
 
 # lock file KiCad
 *.lck
+
+# SAM: sorgenti scaricati (uso personale, vedere espSAM/fetch_sam.sh), non in git
+/c64esp32Cart/sam.c
+/c64esp32Cart/sam.h
+/c64esp32Cart/render.c
+/c64esp32Cart/render.h
+/c64esp32Cart/reciter.c
+/c64esp32Cart/reciter.h
+/c64esp32Cart/RenderTabs.h
+/c64esp32Cart/ReciterTabs.h
+/c64esp32Cart/SamTabs.h
+/c64esp32Cart/debug.c
+/c64esp32Cart/debug.h
+
+# build SAM: PRG del menu ridotto
+/espsamauto.prg
+
+# artefatto locale del bootstrap sd2iec (boot_sd.prg e' quello tracciato)
+/bootsd
+
+# output dei test in emulatore (rigenerabili con acme; vedi tools/emu/README.md)
+/tools/emu/*.prg
+/tools/emu/sam_player_test.inc

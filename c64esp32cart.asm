@@ -27,7 +27,11 @@
         !to "c64esp32menu_c000_cart.prg", cbm
     } else {
         !ifdef PRGAUTO {
+          !ifdef SAM {
+            !to "espsamauto.prg", cbm
+          } else {
             !to "espnewsauto.prg", cbm
+          }
         } else {
             !to "c64esp8kROM.bin", plain
         }
@@ -186,6 +190,9 @@ warmstart
 
 payload_rom = *
 !pseudopc CODE_BASE {
+        jmp main_init                       ; $C000: entry del payload
+menu_return                                 ; $C003: ritorno al menu dai PRG
+        jmp restart                         ; (samplayer.asm: SAM TALK/NEWS)
 
 ; ---------------------------------------------------------------------------
 ;  Inizializzazione
@@ -249,15 +256,17 @@ restart
         sta $dd00
         lda #1
         sta $cc                             ; cursore KERNAL spento nel menu
-        lda #0
-        sta cassette_buffer                 ; 0 = ultimo file ricevuto non e' un SID
-        lda #0
-        sta $d021                           ; sfondo nero
         lda #14
         sta $d020                           ; bordo azzurro
         lda #0
+        sta cassette_buffer                 ; 0 = ultimo file ricevuto non e' un SID
+        sta $d021                           ; sfondo nero
         sta menu_mode                       ; 0 = main menu
+!ifdef SAM {
+        lda #4                              ; build SAM: 5 voci (SD, HELP, BASIC, TALK, NEWS)
+} else {
         lda #8
+}
         sta menu_max
         lda #0
         sta news_bg
@@ -299,6 +308,94 @@ main_loop
 ; ---------------------------------------------------------------------------
 ;  Voci di menu semplici
 ; ---------------------------------------------------------------------------
+!ifdef SAM {
+!zone sam_run
+; carica "samplayer.prg" ($0801) e lo avvia; $02 = 1 talk, 2 news
+do_samtalk
+        jsr sam_load
+        jmp sam_go
+; SAM NEWS: prima la schermata delle fonti (come il menu normale), poi il
+; player che riceve il testo e fa leggere le news dalla fonte scelta.
+do_samnews
+        lda #65                             ; schermata fonti NEWS -> $A000
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        jsr show_a000_template
+        lda #9                              ; 10 fonti = NEWS_SOURCE_COUNT-1
+        sta menu_max
+        lda #3                              ; mode 3: scelta fonte per SAM
+        sta menu_mode
+        jsr menu_nav_init
+        jmp main_loop
+; fonte scelta (mode 3): comando 117 + indice, poi carica il player
+samnews_go
+        lda #117
+        sta $de00
+        jsr sam_wait_ready
+        lda news_source
+        sta $de00
+        jsr sam_load
+        lda PRG_ENTRY                       ; news = entry + 3 (entry = $080D)
+        clc
+        adc #3
+        sta PRG_ENTRY
+sam_go  jmp (PRG_ENTRY)                     ; $01 lo sistema il player (main_init)
+; attende che l'ESP32 sia pronto a ricevere ($DF00 con bit 7 alto)
+sam_wait_ready
+        lda $df00
+        cmp #128
+        bcc sam_wait_ready
+        rts
+; attende che l'ESP32 sia *fermo*: scrive $FF solo quando e' in attesa di un
+; comando (i campioni usano solo il nibble alto, quindi $FF non compare mai
+; durante una frase). Evita di mandare 51/53 mentre sta ancora parlando.
+sam_wait_idle
+        lda $a2
+        sta wi_t0
+.w      lda $df00
+        cmp #$ff
+        beq .ok
+        lda $a2
+        sec
+        sbc wi_t0
+        cmp #120                            ; ~2 secondi
+        bcc .w
+.ok     rts
+sam_load
+        jsr sam_wait_idle
+        lda #119                            ; ESP32: mandami samplayer.prg
+        sta OPTION                          ; (il nome non serve al C64)
+        jsr receive_buffer
+        jsr wait_rx_long
+        lda SIZE+2                          ; il player deve caricarsi a $0801
+        cmp #$01
+        bne .err
+        lda SIZE+3
+        cmp #$08
+        bne .err
+        lda $0803                           ; riga BASIC "2026" (SYS 2061)
+        cmp #$ea
+        bne .err
+        lda $0804
+        cmp #$07
+        bne .err
+        lda #60
+        sta OPTION
+        jsr receive_buffer
+        jsr wait_rx_long
+        lda PRG_ENTRY                       ; entry atteso $080D (SYS 2061)
+        cmp #$0d
+        bne .err
+        lda PRG_ENTRY+1
+        cmp #$08
+        bne .err
+        rts
+.err    ldx #<msg_samerr                    ; ESP32 non pronto: invece di saltare
+        ldy #>msg_samerr                    ; a un entry sbagliato (blocco) lo
+        jsr show_msg                        ; si dice a video
+        jmp restart
+} else {
 !zone do_supermon
 do_supermon
         lda #50
@@ -313,6 +410,7 @@ do_supermon
         ldy #>msg_nocart
         jsr show_msg
         jmp restart
+}
 }
 
 !zone do_help
@@ -395,6 +493,8 @@ show_a000_template
         sta ptr2+1
         jmp copy920
 
+!ifdef SAM {
+} else {
 load_weather_template
         lda #52
         sta OPTION
@@ -403,6 +503,7 @@ load_weather_template
         lda #$14                            ; charset ROM maiuscolo ($1000)
         sta $d018
         jmp show_a000_template
+}
 }
 
 !zone dir_show
@@ -463,6 +564,10 @@ menu_down
 menu_enter
         jsr set_default_irq
         lda menu_mode
+!ifdef SAM {
+        cmp #3
+        beq .samsrc
+} else {
         beq .main
         cmp #1
         beq .news
@@ -476,6 +581,7 @@ menu_enter
         sta news_source
         jsr bg_menu
         jmp main_loop
+}
 .main   lda HOME_LINE
         asl
         tax
@@ -485,10 +591,25 @@ menu_enter
         sta ptr1+1
         jmp (ptr1)
 
+!ifdef SAM {
+; mode 3: fonte NEWS scelta con il puntatore, poi si carica il player SAM
+.samsrc lda HOME_LINE
+        sta news_source
+        jmp samnews_go
+}
+
+!ifdef SAM {
+menu_actions
+        !word directory, do_help, run_prg   ; niente SUPERMON/CLOCK nella build SAM
+        !word do_samtalk, do_samnews        ; caricano samplayer.prg
+} else {
 menu_actions
         !word directory, do_supermon, do_help, do_weather, run_prg
         !word do_koala, do_news, do_slideshow, do_seq_slideshow
+}
 
+!ifdef SAM {
+} else {
 !zone do_weather
 do_weather
         jsr load_weather_template
@@ -504,6 +625,9 @@ do_weather
         jmp .loop
 .done   jmp restart
 
+}
+
+!ifndef SAM {
 !zone do_koala
 do_koala
         lda koala_ok
@@ -664,6 +788,8 @@ do_seq_slideshow
         ldy #>msg_nocart
         jsr show_msg
         jmp restart
+}
+
 }
 
 ; ---------------------------------------------------------------------------
@@ -1571,6 +1697,11 @@ msg_nokoala
         !pet "No Koala image.", 0
 msg_sid
         !pet "PLAY LOADED SID? Y/N", 0
+!ifdef SAM {
+msg_samerr
+        !pet "player sam non caricato", 13, 13
+        !pet "esp32 non pronto: riprova", 0
+}
 
 ; ---------------------------------------------------------------------------
 ;  Colori e variabili
@@ -1587,6 +1718,10 @@ RXFULL      !byte 0
 RYINDEX     !byte 0                         ; (erano $02,$03,$04: $03/$04 sono vettori BASIC)
 wait_t0     !byte 0
 wait_wrap   !byte 0
+!ifdef SAM {
+wi_t0       !byte 0
+wr_t0       !byte 0
+}
 weather_wait !byte 0
 sid_cmd     !byte 0
 
@@ -1683,11 +1818,28 @@ nmi
         rti
 
 !zone esp
+!ifdef SAM {
+; attende che l'ESP32 sia pronto (bit 7 di $DF00 alto), massimo ~2 s:
+; senza timeout un ESP32 che non risponde bloccava il C64 per sempre.
+wait_for_ready_to_receive
+        lda $a2
+        sta wr_t0
+.w      lda $df00
+        cmp #128
+        bcs .ok
+        lda $a2
+        sec
+        sbc wr_t0
+        cmp #120                            ; ~2 secondi
+        bcc .w
+.ok     rts
+} else {
 wait_for_ready_to_receive
         lda $df00
         cmp #128
         bcc wait_for_ready_to_receive
         rts
+}
 
 receive_buffer
         lda #0
@@ -2440,6 +2592,9 @@ m_prg_end
 }
 
 CODE_END = *
+!if CODE_END > $d000 {
+        !error "codice oltre $D000: ridurre (CODE_END=", CODE_END, ")"
+}
 }
 payload_end = *
 CODE_LEN = payload_end - payload_rom
